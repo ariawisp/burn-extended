@@ -1,6 +1,4 @@
 //! Load a SafeTensors file, split fused QKV into Q/K/V, and apply to a model.
-//! This example requires the `store` feature.
-#![cfg(feature = "store")]
 
 use std::path::PathBuf;
 
@@ -42,4 +40,3 @@ fn main() -> anyhow::Result<()> {
     println!("Loading from {:?} (this is a scaffold; wire your model and call load_safetensors_qkv_split)", args.path);
     Ok(())
 }
-

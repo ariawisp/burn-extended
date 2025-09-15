@@ -1,6 +1,4 @@
 //! Load a SafeTensors file and apply weights to a model using burn-store.
-//! This example requires the `store` feature.
-#![cfg(feature = "store")]
 
 use std::path::PathBuf;
 
@@ -42,4 +40,3 @@ fn main() -> anyhow::Result<()> {
     println!("Configured loader: {:?} -> {:?}", args, cfg);
     Ok(())
 }
-

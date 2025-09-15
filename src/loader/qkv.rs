@@ -5,10 +5,8 @@ use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapsh
 use burn_store::safetensors::SafetensorsError;
 use burn_tensor::{DType, TensorData, backend::Backend};
 
-#[cfg(feature = "store")]
 use core::path::Path;
 
-#[cfg(feature = "store")]
 use safetensors::{tensor::TensorView, SafeTensors};
 
 use super::common::{burn_dtype_from_safetensors, elem_size};
@@ -34,7 +32,6 @@ pub struct QkvSplitSpec {
     pub strategy: QkvSplitStrategy,
 }
 
-#[cfg(feature = "store")]
 fn split_along_last_dim(bytes: &[u8], shape: &[usize], dtype: DType, sizes: (usize, usize, usize)) -> (TensorData, TensorData, TensorData) {
     let total_last = shape.last().copied().unwrap_or(0);
     let (q, k, v) = sizes;
@@ -71,7 +68,6 @@ fn split_along_last_dim(bytes: &[u8], shape: &[usize], dtype: DType, sizes: (usi
     )
 }
 
-#[cfg(feature = "store")]
 fn view_to_snapshot(name: &str, view: &TensorView) -> Result<TensorSnapshot, SafetensorsError> {
     let dtype = burn_dtype_from_safetensors(view.dtype())?;
     let shape = view.shape().to_vec();
@@ -90,7 +86,6 @@ fn view_to_snapshot(name: &str, view: &TensorView) -> Result<TensorSnapshot, Saf
 
 /// Load a SafeTensors file, splitting fused QKV weights/biases into separate Q, K, V snapshots,
 /// and apply to the model. For all non-fused entries, loads them as-is.
-#[cfg(feature = "store")]
 pub fn load_safetensors_qkv_split<B: Backend, M>(
     model: &mut M,
     path: &Path,

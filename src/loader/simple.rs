@@ -4,7 +4,6 @@ use burn::module::Module;
 use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
 use burn_tensor::backend::Backend;
 
-#[cfg(feature = "store")]
 use core::path::Path;
 
 /// Simple loader configuration for 1:1 mapping cases.
@@ -16,7 +15,6 @@ pub struct SimpleLoadConfig {
 }
 
 /// Load a model from a SafeTensors file with optional PyTorch→Burn adapter and options.
-#[cfg(feature = "store")]
 pub fn load_apply_file<B: Backend, M>(
     model: &mut M,
     path: &Path,
@@ -35,4 +33,3 @@ where
     store = store.validate(cfg.validate);
     model.apply_from(&mut store)
 }
-
