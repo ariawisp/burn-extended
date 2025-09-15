@@ -1,0 +1,45 @@
+# --- Rust / Cargo ---
+/target/
+**/*.rs.bk
+# For libraries, Cargo.lock is typically not checked in
+Cargo.lock
+
+# LLVM/coverage artifacts
+*.profraw
+*.profdata
+coverage/
+**/lcov.info
+**/cobertura.xml
+
+# Benchmarks (criterion)
+criterion/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# IDE/editor files
+.idea/
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env/config
+.env
+.env.*
+
+# Wasm/packaging (if used in examples)
+pkg/
+wasm-pack.log
+
+# Build outputs (if any bundlers used in examples)
+dist/
+build/
+
+# Misc
+.history
