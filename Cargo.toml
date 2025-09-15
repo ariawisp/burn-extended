@@ -17,6 +17,7 @@ burn-core   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d
 burn-tensor = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-tensor", default-features = false }
 burn-store  = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-store",  default-features = false }
 safetensors = { version = "0.4", default-features = true }
+burn-wgpu   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-wgpu",   default-features = false }
 
 [features]
 default = ["std"]

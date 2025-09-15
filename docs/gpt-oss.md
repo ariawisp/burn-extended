@@ -54,9 +54,14 @@ SwiGLU clamp
   - Clamp the activations around the SwiGLU call in your block module.
   - Provide a small `SwiGluWithClamp` helper (planned in the roadmap).
 
-Generation harness (sketch)
+Backend init and generation harness (sketch)
 ```rust
+use burn_wgpu::{Wgpu as B, WgpuDevice};
 use burn_extended::{attention::*, cache::*, generate::*, sampling::*, rope, loader};
+
+// Initialize WGPU backend (Metal suggested on macOS)
+let device = WgpuDevice::default();
+burn_wgpu::init_setup::<burn_wgpu::graphics::Metal>(&device, Default::default());
 
 struct GptOssArModel<B: Backend> { /* ... */ }
 impl<B: Backend> AutoregressiveModel<B> for GptOssArModel<B> {

@@ -29,9 +29,13 @@ RoPE
 - If standard RoPE is needed, use Burn’s `RotaryEncodingConfig::init` and pass into streaming params.
 - If extended context is desired later, use `rope::init_ntk_yarn(...)` from this repo.
 
-Generation harness (sketch)
+Backend init and generation harness (sketch)
 ```rust
+use burn_wgpu::{Wgpu as B, WgpuDevice};
 use burn_extended::{attention::*, cache::*, generate::*, sampling::*};
+
+let device = WgpuDevice::default();
+burn_wgpu::init_setup::<burn_wgpu::graphics::Metal>(&device, Default::default());
 
 struct AceStepArModel<B: Backend> { /* ... */ }
 impl<B: Backend> AutoregressiveModel<B> for AceStepArModel<B> {

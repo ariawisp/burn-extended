@@ -34,5 +34,5 @@ Roadmap
 - Expose simple CLIs for examples (window/chunk sizes, sinks on/off, sampler config)
 
 Notes
-- Expects a sibling checkout of the Burn repo; uses path dependencies to `burn-core` and `burn-tensor`.
-- Backend‑agnostic; examples are configured for WGPU/Metal by default.
+- Targets the WGPU backend for inference and examples. Use Metal (MSL) on macOS via `init_setup::<graphics::Metal>()`.
+- Uses `burn-store` + `safetensors` for model loading. Dependencies point to the [antimora/burn (commit 7235cf2)](https://github.com/antimora/burn/commit/7235cf2f5cd501d2abc578865a592e6fb59d1772) fork which introduces `burn-store`.
