@@ -1,4 +1,5 @@
 use burn_core as burn;
+extern crate alloc;
 
 use burn::tensor::{Int, Tensor, backend::Backend};
 
@@ -119,14 +120,61 @@ pub fn process_and_sample<B: Backend>(
     cfg: SamplerConfig,
     greedy_when_temp_zero: bool,
 ) -> Tensor<B, 1, Int> {
-    let mut l = logits;
-    if let Some(k) = cfg.top_k { l = apply_top_k_cpu(l, k); }
-    l = apply_penalties_cpu(l, tokens_history, cfg.repetition_penalty, cfg.frequency_penalty, cfg.presence_penalty);
-    l = apply_temperature(l, cfg.temperature);
-    if cfg.temperature <= 0.0 && greedy_when_temp_zero {
-        sample_greedy(l)
-    } else {
-        sample_multinomial_cpu(l)
+    // Build a default pipeline from config
+    let mut list = ProcessorList::new();
+    if let Some(k) = cfg.top_k { list.push(TopKProcessor { k }); }
+    list.push(PenaltyProcessor { repetition_penalty: cfg.repetition_penalty, frequency_penalty: cfg.frequency_penalty, presence_penalty: cfg.presence_penalty });
+    list.push(TemperatureProcessor { temperature: cfg.temperature });
+    let l = list.apply(logits, tokens_history);
+    if cfg.temperature <= 0.0 && greedy_when_temp_zero { sample_greedy(l) } else { sample_multinomial_cpu(l) }
+}
+
+/// A composable logits processor.
+pub trait LogitsProcessor<B: Backend> {
+    fn process(&self, logits: Tensor<B, 2>, history: Option<&[Vec<usize>]>) -> Tensor<B, 2>;
+}
+
+/// A simple processor list that applies processors in order.
+pub struct ProcessorList<B: Backend> {
+    procs: alloc::vec::Vec<alloc::boxed::Box<dyn LogitsProcessor<B>>>,
+}
+
+impl<B: Backend> ProcessorList<B> {
+    pub fn new() -> Self { Self { procs: alloc::vec::Vec::new() } }
+    pub fn push<P: LogitsProcessor<B> + 'static>(&mut self, p: P) { self.procs.push(alloc::boxed::Box::new(p)); }
+    pub fn apply(&self, mut logits: Tensor<B, 2>, history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
+        for p in &self.procs { logits = p.process(logits, history); }
+        logits
     }
 }
 
+pub struct TemperatureProcessor { pub temperature: f32 }
+impl<B: Backend> LogitsProcessor<B> for TemperatureProcessor {
+    fn process(&self, logits: Tensor<B, 2>, _history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
+        apply_temperature(logits, self.temperature)
+    }
+}
+
+pub struct TopKProcessor { pub k: usize }
+impl<B: Backend> LogitsProcessor<B> for TopKProcessor {
+    fn process(&self, logits: Tensor<B, 2>, _history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
+        apply_top_k_cpu(logits, self.k)
+    }
+}
+
+pub struct PenaltyProcessor {
+    pub repetition_penalty: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
+}
+impl<B: Backend> LogitsProcessor<B> for PenaltyProcessor {
+    fn process(&self, logits: Tensor<B, 2>, history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
+        apply_penalties_cpu(
+            logits,
+            history,
+            self.repetition_penalty,
+            self.frequency_penalty,
+            self.presence_penalty,
+        )
+    }
+}

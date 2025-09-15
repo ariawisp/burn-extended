@@ -13,12 +13,12 @@ workspace = true
 
 [dependencies]
 # Point to antimora/burn commit that includes burn-store
-burn-core = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-core", default-features = false }
+burn-core   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-core",   default-features = false }
 burn-tensor = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-tensor", default-features = false }
-burn-store = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-store", default-features = false }
-\n+# Used by the QKV split loader path for direct SafeTensors parsing
-\n+safetensors = { version = "0.4", default-features = true }
+burn-store  = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-store",  default-features = false, optional = true }
+safetensors = { version = "0.4", default-features = true, optional = true }
 
 [features]
 default = ["std"]
 std = ["burn-core/std"]
+store = ["dep:burn-store", "dep:safetensors"]

@@ -11,3 +11,5 @@ pub mod sampling;
 pub mod generate;
 pub mod cache;
 pub mod bias;
+#[cfg(feature = "store")]
+pub mod loader;

@@ -137,40 +137,15 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
 
         if need > cap {
             let num_evicted = need - cap;
-            let num_rolled = cache.local_end_index.saturating_sub(num_evicted + sink);
-            if num_rolled > 0 {
-                let src_start = sink + num_evicted;
-                let src_end = sink + num_evicted + num_rolled;
-                let rolled_k = cache.k.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ]);
-                cache.k.inplace(|t| {
-                    t.slice_assign([
-                        0..batch_size,
-                        sink..sink + num_rolled,
-                        0..self.n_heads,
-                        0..self.d_k,
-                    ], rolled_k)
-                });
-                let rolled_v = cache.v.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ]);
-                cache.v.inplace(|t| {
-                    t.slice_assign([
-                        0..batch_size,
-                        sink..sink + num_rolled,
-                        0..self.n_heads,
-                        0..self.d_k,
-                    ], rolled_v)
-                });
-            }
-            cache.local_end_index = cache.local_end_index + delta - num_evicted;
+            crate::attention::evict_and_roll_mha(
+                cache,
+                batch_size,
+                self.n_heads,
+                self.d_k,
+                sink,
+                num_evicted,
+            );
+            cache.local_end_index = cache.local_end_index + delta;
         } else {
             cache.local_end_index += delta;
         }
@@ -252,4 +227,3 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
             .swap_dims(1, 2)
     }
 }
-

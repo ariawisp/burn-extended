@@ -253,48 +253,15 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
 
         if need > cap {
             let num_evicted = need - cap;
-            let num_rolled = cache.local_end_index.saturating_sub(num_evicted + sink);
-            if num_rolled > 0 {
-                let src_start = sink + num_evicted;
-                let src_end = sink + num_evicted + num_rolled;
-                // Roll K
-                let rolled = cache.k.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.kv_heads,
-                    0..self.d_k,
-                ]);
-                cache.k.inplace(|t| {
-                    t.slice_assign(
-                        [
-                            0..batch_size,
-                            sink..sink + num_rolled,
-                            0..self.kv_heads,
-                            0..self.d_k,
-                        ],
-                        rolled,
-                    )
-                });
-                // Roll V
-                let rolled_v = cache.v.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.kv_heads,
-                    0..self.d_k,
-                ]);
-                cache.v.inplace(|t| {
-                    t.slice_assign(
-                        [
-                            0..batch_size,
-                            sink..sink + num_rolled,
-                            0..self.kv_heads,
-                            0..self.d_k,
-                        ],
-                        rolled_v,
-                    )
-                });
-            }
-            cache.local_end_index = cache.local_end_index + delta - num_evicted;
+            crate::attention::evict_and_roll_mqa(
+                cache,
+                batch_size,
+                self.kv_heads,
+                self.d_k,
+                sink,
+                num_evicted,
+            );
+            cache.local_end_index = cache.local_end_index + delta;
         } else {
             cache.local_end_index += delta;
         }
@@ -431,4 +398,3 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             .swap_dims(1, 2)
     }
 }
-
