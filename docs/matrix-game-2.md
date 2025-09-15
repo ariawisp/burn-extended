@@ -50,7 +50,4 @@ Example: winit control loop (WGPU rendering also available)
 cargo run -p burn-extended --example matrix_game2_winit
 ```
 
-WGPU rendering
-```bash
-cargo run -p burn-extended --example matrix_game2_wgpu
-```
+Rendering/UI: integrate winit/wgpu directly in your app as needed.

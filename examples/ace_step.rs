@@ -25,9 +25,7 @@ fn main() {
 
     let rope = RotaryEncodingConfig::new(4096, head_dim).init::<B>(&device);
 
-    let mut cache = burn::nn::attention::StreamingMhaCache::new(
-        &device, b, cache_len, n_heads, head_dim, /*sink*/ 0,
-    );
+    let mut cache = burn_extended::attention::StreamingMhaCache::new(&device, b, cache_len, n_heads, head_dim, /*sink*/ 0);
     let x = Tensor::<B, 3>::random([b, t, d_model], Distribution::Default, &device);
 
     let mut outputs = Vec::new();
@@ -48,4 +46,3 @@ fn main() {
     let y = Tensor::cat(outputs, 1);
     println!("ace-step example output shape: {:?}", y.dims());
 }
-

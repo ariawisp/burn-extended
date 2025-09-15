@@ -99,7 +99,7 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
     pub fn forward_streaming(
         &self,
         x: Tensor<B, 3>,
-        cache: &mut burn::nn::attention::StreamingMhaCache<B>,
+        cache: &mut crate::attention::StreamingMhaCache<B>,
         params: ExtStreamingParams<B>,
     ) -> Tensor<B, 3> {
         let [batch_size, seq_len, _] = x.dims();

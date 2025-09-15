@@ -21,7 +21,7 @@ fn main() {
         .with_dropout(0.0)
         .init::<B>(&device);
 
-    let mut cache = burn::nn::attention::StreamingMhaCache::new(&device, b, cache_len, n_heads, head_dim, sink_tokens);
+    let mut cache = burn_extended::attention::StreamingMhaCache::new(&device, b, cache_len, n_heads, head_dim, sink_tokens);
     let x = Tensor::<B, 3>::random([b, t, d_model], Distribution::Default, &device);
 
     let mut outputs = Vec::new();
@@ -37,4 +37,3 @@ fn main() {
     let y = Tensor::cat(outputs, 1);
     println!("matrix-game-2 example output shape: {:?}", y.dims());
 }
-
