@@ -54,3 +54,5 @@ pub fn init_ntk_yarn<B: Backend>(
     rope
 }
 
+pub mod rope3d;
+pub use rope3d::*;

@@ -12,3 +12,6 @@ pub mod generate;
 pub mod cache;
 pub mod bias;
 pub mod loader;
+pub mod image;
+pub mod video;
+pub mod diffusion;

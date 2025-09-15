@@ -5,6 +5,7 @@ pub mod cache_ops;
 pub mod core;
 pub mod baseline;
 pub mod mask1d;
+pub mod linear;
 
 // Re-export common types for convenience
 pub use streaming_mqa::*;
@@ -14,6 +15,7 @@ pub use cache_ops::*;
 pub use core::*;
 pub use baseline::*;
 pub use mask1d::*;
+pub use linear::*;
 
 // Convenience: re-export AttnWindow from burn-core
 pub use burn::nn::attention::AttnWindow;
