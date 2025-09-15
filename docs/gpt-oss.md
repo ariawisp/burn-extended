@@ -56,7 +56,7 @@ SwiGLU clamp
 
 Generation harness (sketch)
 ```rust
-use burn_extended::{attention::*, cache::*, generate::*, sampling::*, rope};
+use burn_extended::{attention::*, cache::*, generate::*, sampling::*, rope, loader};
 
 struct GptOssArModel<B: Backend> { /* ... */ }
 impl<B: Backend> AutoregressiveModel<B> for GptOssArModel<B> {
@@ -72,7 +72,29 @@ let cfg = GenerationConfig { max_new_tokens: 256, eos_token: None, sampler: Samp
 let outputs = generate(&model, &device, &[prompt_tokens], cfg);
 ```
 
+Checkpoint loading (fused QKV) with split helper
+```rust
+use burn_extended::loader::{QkvSplitSpec, QkvSplitStrategy, load_safetensors_qkv_split};
+
+let splits = vec![
+    QkvSplitSpec {
+        fused_weight: "block.0.attn.qkv.weight".into(),
+        fused_bias:   Some("block.0.attn.qkv.bias".into()),
+        q_weight:     "block.0.attn.query.weight".into(),
+        k_weight:     "block.0.attn.key.weight".into(),
+        v_weight:     "block.0.attn.value.weight".into(),
+        q_bias:       Some("block.0.attn.query.bias".into()),
+        k_bias:       Some("block.0.attn.key.bias".into()),
+        v_bias:       Some("block.0.attn.value.bias".into()),
+        strategy:     QkvSplitStrategy::Heads { n_heads, kv_heads, head_dim },
+    },
+    // ...one spec per layer...
+];
+
+let result = load_safetensors_qkv_split(&mut model, std::path::Path::new("model.safetensors"), &splits, /*from_pytorch*/ true, /*allow_partial*/ true, /*validate*/ false)?;
+assert!(result.is_success());
+```
+
 Open items
 - Implement the exact decoder block (RMSNorm + SwiGLU clamp + residuals) and wire per‑layer sinks.
 - Provide a weight loader utility tailored to GPT‑OSS checkpoints.
-

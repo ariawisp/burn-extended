@@ -32,7 +32,15 @@ loop {
 }
 ```
 
+Checkpoint loading (1:1 mapping) with store helper
+```rust
+use burn_extended::loader::{load_apply_file, SimpleLoadConfig};
+
+let cfg = SimpleLoadConfig { allow_partial: true, validate: false, from_pytorch: true };
+let result = load_apply_file(&mut model, std::path::Path::new("matrix_game_2.safetensors"), &cfg)?;
+assert!(result.is_success());
+```
+
 Open items
 - Define the minimal head to project hidden states to action space.
 - Provide a compact state↔tokens↔actions encoding/decoding format.
-

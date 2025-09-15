@@ -44,7 +44,15 @@ impl<B: Backend> AutoregressiveModel<B> for AceStepArModel<B> {
 }
 ```
 
+Checkpoint loading (1:1 mapping) with store helper
+```rust
+use burn_extended::loader::{load_apply_file, SimpleLoadConfig};
+
+let cfg = SimpleLoadConfig { allow_partial: true, validate: false, from_pytorch: true };
+let result = load_apply_file(&mut model, std::path::Path::new("ace_step.safetensors"), &cfg)?;
+assert!(result.is_success());
+```
+
 Open items
 - Implement the precise bias‑generating module used by ACE‑Step and map its parameters.
 - Provide a small example to visualize how the bias changes with context.
-
