@@ -1,96 +1,43 @@
 # burn-extended
 
-High-level, reusable building blocks for fast, long-context inference on top of Burn.
+High‑level, reusable building blocks for fast, long‑context inference on top of Burn.
 
-This package collects attention variants, RoPE helpers, sampling and generation utilities that are commonly needed across modern LLM-style and sequence models. It is designed to live outside the core Burn repo and remain model-agnostic, while making it straightforward to implement model-specific logic.
+This package is model‑agnostic and focuses on the most demanded primitives for modern transformer‑style models: attention variants (streaming MQA/MHA), RoPE helpers, sampling/generation utilities, multi‑layer cache management, and attention bias helpers. It complements Burn core and can be maintained as a separate repository.
 
 What this repo provides
 - Attention primitives
-  - Streaming Multi‑Query / Grouped‑Query Attention (MQA/GQA) with:
-    - Fewer K/V heads than Q heads (num_key_value_heads < num_attention_heads)
-    - Sliding‑window attention over a rolling KV cache
-    - Optional learned “sinks” logit column per head‑group (GPT‑OSS style)
-    - Optional additive attention bias hook (for ALiBi or custom biases)
-  - Non‑streaming MQA (training or non‑cached inference) with masks + additive bias
-  - Extended Streaming MHA that accepts an additive bias term (drop‑in when MQA isn’t required)
-- RoPE (Rotary) helpers
-  - NTK/YaRN scaling convenience that wraps Burn’s frequency‑scaling entrypoint and applies concentration
+  - Streaming Multi‑Query/Grouped‑Query Attention (MQA/GQA) with sinks bias, sliding window, and additive logits bias
+  - Non‑streaming MQA with masks + additive logits bias
+  - Extended Streaming MHA with additive logits bias (drop‑in when MQA isn’t required)
+- RoPE helpers
+  - NTK/YaRN scaling + concentration wrapper over Burn’s Rotary frequency‑scaling
 - Sampling and generation
-  - Logits processors: temperature, top‑k, repetition/frequency/presence penalties
-  - Simple samplers (greedy, multinomial)
-  - A small generation harness (AutoregressiveModel trait + generator) for chunked decoding with caches
-- Caching and window policies
-  - Multi‑layer cache managers for MHA/MQA
-  - Per‑layer window policies (e.g., full on even layers, windowed on odd)
+  - Logits processors (temperature, top‑k, repetition/frequency/presence penalties)
+  - Greedy/multinomial samplers and a minimal generation harness for chunked decoding
+- Caches and windows
+  - Multi‑layer cache managers (MHA/MQA) and per‑layer window policies (e.g., full vs. sliding by layer)
 - Attention bias utilities
-  - Sinks helpers (reshape per‑head sinks into [kv_heads, groups])
-  - ALiBi bias generator (additive, shaped to the active window)
+  - Sinks helpers and ALiBi bias generator (additive, window‑shaped)
 
-How this maps to the three models
+Model coverage (current targets)
 
-GPT‑OSS
-- Requirements
-  - GQA/MQA: `num_attention_heads` with fewer `num_key_value_heads`
-  - Learned sinks bias (append a sentinel logit per head‑group)
-  - Sliding window (often on alternate layers)
-  - NTK/YaRN RoPE scaling and concentration
-  - Standard Transformer blocks (RMSNorm, SwiGLU with clamp), sampler, and weight loading
-- What burn‑extended provides
-  - Streaming MQA with windowed KV cache and sinks bias
-  - Non‑streaming MQA for training/validation
-  - RoPE NTK/YaRN helper
-  - Generation + sampling utilities
-  - Cache manager + every‑other‑layer window policy
-- Still model‑specific
-  - Exact GPT‑OSS decoder block (RMSNorm, residual wiring, SwiGLU clamp)
-  - Layer‑local sinks parameters and a weight loader from GPT‑OSS checkpoints
-
-ACE‑Step
-- Requirements
-  - Streaming MHA with a custom, learned attention‑biasing policy
-  - Sliding window and cache management
-  - RoPE (standard) and a generation loop
-- What burn‑extended provides
-  - Extended Streaming MHA with additive `attn_bias`
-  - Bias utilities (ALiBi as an example; pluggable custom bias tensors)
-  - Cache manager + window policies and generation harness
-- Still model‑specific
-  - ACE‑Step block definition and the function that generates its attention bias
-  - Weight import and any task‑specific heads
-
-Matrix‑Game‑2
-- Requirements
-  - Streaming MHA with “sink tokens” preserved across windows
-  - Simple sampler and a loop that interacts with the environment
-- What burn‑extended provides
-  - Streaming cache with sink‑token preservation (via Burn’s cache; extended MHA works with it)
-  - Window policies and generation utilities to step through sequences
-- Still model‑specific
-  - Minimal model head and the environment glue (state→tokens, tokens→actions)
+| Model           | Key requirements                                                                 | Provided by burn‑extended                                           | Still model‑specific                                      |
+|-----------------|-----------------------------------------------------------------------------------|----------------------------------------------------------------------|------------------------------------------------------------|
+| GPT‑OSS         | GQA/MQA; learned sinks bias; sliding window (alternate layers); NTK/YaRN RoPE     | Streaming MQA with sinks + window; NTK/YaRN RoPE; cache/window tools; generation + samplers | Decoder block wiring (RMSNorm, residuals, SwiGLU clamp); per‑layer sinks params; weight loader |
+| ACE‑Step        | Streaming MHA with custom learned attention bias; sliding window; RoPE; generation| Extended Streaming MHA with additive `attn_bias`; bias utils; cache/window tools; generation | Exact block + bias policy function; weights and task heads  |
+| Matrix‑Game‑2   | Streaming MHA with sink tokens; simple interaction loop                           | Streaming cache with sink preservation; window policy; generation utilities                   | Minimal head + environment glue (state↔tokens↔actions)     |
 
 Examples
-- `examples/gpt_oss.rs` — Streaming MQA + sinks + NTK/YaRN RoPE (runs with WGPU/Metal)
+- `examples/gpt_oss.rs` — Streaming MQA + sinks + NTK/YaRN RoPE (WGPU/Metal)
 - `examples/ace_step.rs` — Streaming MHA + additive attention bias
-- `examples/matrix_game_2.rs` — Streaming MHA with sink tokens and a sliding window
+- `examples/matrix_game_2.rs` — Streaming MHA with sink tokens and sliding window
 
-Repository layout
-- `src/attention/`
-  - `streaming_mqa.rs` — Streaming MQA (GQA) with sinks and `attn_bias`
-  - `mqa.rs` — Non‑streaming MQA with masks + `attn_bias`
-  - `streaming_ext.rs` — Extended Streaming MHA with `attn_bias`
-- `src/rope/` — RoPE NTK/YaRN helper
-- `src/sampling/` — logits processors and basic samplers
-- `src/generate/` — autoregressive generation harness
-- `src/cache/` — multi‑layer cache managers and window policies
-- `src/bias/` — sinks helpers and ALiBi builder
-- `examples/` — runnable demos for the three target models
-
-Roadmap (next steps)
-- Add optional SwiGLU‑with‑clamp activation utility
+Roadmap
+- Add optional SwiGLU‑with‑clamp utility
 - Provide ready‑to‑use GPT‑OSS decoder block and a minimal weight loader
-- Add a bias‑policy example for ACE‑Step
-- Package examples with simple CLIs (window/chunk size, sinks on/off, sampler config)
+- Add a concrete bias‑policy example for ACE‑Step
+- Expose simple CLIs for examples (window/chunk sizes, sinks on/off, sampler config)
 
 Notes
-- This repo expects a sibling checkout of the Burn repo and uses path dependencies to `burn-core` and `burn-tensor`.
-- The code is backend agnostic, with examples configured for WGPU/Metal.
+- Expects a sibling checkout of the Burn repo; uses path dependencies to `burn-core` and `burn-tensor`.
+- Backend‑agnostic; examples are configured for WGPU/Metal by default.
