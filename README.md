@@ -21,11 +21,11 @@ What this repo provides
 
 Model coverage (current targets)
 
-| Model           | Key requirements                                                                 | Provided by burn‑extended                                           | Still model‑specific                                      |
-|-----------------|-----------------------------------------------------------------------------------|----------------------------------------------------------------------|------------------------------------------------------------|
-| GPT‑OSS         | GQA/MQA; learned sinks bias; sliding window (alternate layers); NTK/YaRN RoPE     | Streaming MQA with sinks + window; NTK/YaRN RoPE; cache/window tools; generation + samplers | Decoder block wiring (RMSNorm, residuals, SwiGLU clamp); per‑layer sinks params; weight loader |
-| ACE‑Step        | Streaming MHA with custom learned attention bias; sliding window; RoPE; generation| Extended Streaming MHA with additive `attn_bias`; bias utils; cache/window tools; generation | Exact block + bias policy function; weights and task heads  |
-| Matrix‑Game‑2   | Streaming MHA with sink tokens; simple interaction loop                           | Streaming cache with sink preservation; window policy; generation utilities                   | Minimal head + environment glue (state↔tokens↔actions)     |
+| Model | Key requirements | Provided by burn‑extended | Still model‑specific |
+|---|---|---|---|
+| [GPT‑OSS](https://github.com/openai/gpt-oss) | <ul><li>GQA/MQA</li><li>Learned sinks bias</li><li>Sliding window (alternate layers)</li><li>NTK/YaRN RoPE</li></ul> | <ul><li>Streaming MQA with sinks + window</li><li>NTK/YaRN RoPE helper</li><li>Cache/window tools</li><li>Generation + samplers</li></ul> | <ul><li>Decoder block wiring (RMSNorm, residuals, SwiGLU clamp)</li><li>Per‑layer sinks params</li><li>Weight loader</li></ul> |
+| [ACE‑Step](https://github.com/ace-step/ACE-Step) | <ul><li>Streaming MHA with learned attention bias</li><li>Sliding window</li><li>RoPE</li><li>Generation</li></ul> | <ul><li>Extended Streaming MHA with additive <code>attn_bias</code></li><li>Bias utilities</li><li>Cache/window tools</li><li>Generation harness</li></ul> | <ul><li>Exact block + bias policy function</li><li>Weights and task heads</li></ul> |
+| [Matrix‑Game‑2](https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-2) | <ul><li>Streaming MHA with sink tokens</li><li>Simple interaction loop</li></ul> | <ul><li>Streaming cache with sink preservation</li><li>Window policy helpers</li><li>Generation utilities</li></ul> | <ul><li>Minimal head</li><li>Environment glue (state↔tokens↔actions)</li></ul> |
 
 Examples
 - `examples/gpt_oss.rs` — Streaming MQA + sinks + NTK/YaRN RoPE (WGPU/Metal)
