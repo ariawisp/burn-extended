@@ -27,11 +27,6 @@ Model coverage (current targets)
 | [ACE‑Step](https://github.com/ace-step/ACE-Step) | <ul><li>Streaming MHA with learned attention bias</li><li>Sliding window</li><li>RoPE</li><li>Generation</li></ul> | <ul><li>Extended Streaming MHA with additive <code>attn_bias</code></li><li>Bias utilities</li><li>Cache/window tools</li><li>Generation harness</li></ul> | <ul><li>Exact block + bias policy function</li><li>Weights and task heads</li></ul> |
 | [Matrix‑Game‑2](https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-2) | <ul><li>Streaming MHA with sink tokens</li><li>Simple interaction loop</li></ul> | <ul><li>Streaming cache with sink preservation</li><li>Window policy helpers</li><li>Generation utilities</li></ul> | <ul><li>Minimal head</li><li>Environment glue (state↔tokens↔actions)</li></ul> |
 
-Examples
-- `examples/gpt_oss.rs` — Streaming MQA + sinks + NTK/YaRN RoPE (WGPU/Metal)
-- `examples/ace_step.rs` — Streaming MHA + additive attention bias
-- `examples/matrix_game_2.rs` — Streaming MHA with sink tokens and sliding window
-
 Roadmap
 - Add optional SwiGLU‑with‑clamp utility
 - Provide ready‑to‑use GPT‑OSS decoder block and a minimal weight loader
