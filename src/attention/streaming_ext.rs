@@ -199,19 +199,9 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
             ])
             .swap_dims(1, 2);
 
-        let mut attn_scores = q
-            .matmul(k_win.transpose())
-            .div_scalar((self.d_k as f32).sqrt());
-        attn_scores = self.dropout.forward(attn_scores);
-
-        if let Some(bias) = params.attn_bias {
-            attn_scores = attn_scores + bias.clone();
-        }
-        let weights = if self.quiet_softmax {
-            quiet_softmax(attn_scores, 3)
-        } else {
-            softmax(attn_scores, 3)
-        };
+        let attn_scores = crate::attention::compute_scores(q, k_win, self.d_k, &self.dropout);
+        let attn_bias = params.attn_bias.cloned();
+        let weights = crate::attention::apply_bias_and_softmax(attn_scores, attn_bias, self.quiet_softmax);
 
         let context = weights.matmul(v_win)
             .swap_dims(1, 2)

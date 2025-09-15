@@ -1,4 +1,5 @@
 use burn_core as burn;
+extern crate alloc;
 
 use alloc::vec::Vec;
 use burn::tensor::{Int, Tensor, backend::Backend};
@@ -87,3 +88,4 @@ pub fn generate<B: Backend, M: AutoregressiveModel<B>>(
     tokens
 }
 
+pub mod runner;

@@ -341,37 +341,27 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             .reshape([batch_size, self.n_heads, active_len, self.d_k]);
 
         // Attention
-        let mut attn_scores = q
-            .matmul(k_exp.transpose())
-            .div_scalar((self.d_k as f32).sqrt());
-        attn_scores = self.dropout.forward(attn_scores);
+        let mut attn_scores = crate::attention::compute_scores(q, k_exp, self.d_k, &self.dropout);
 
         // Additive attention bias (already shaped to window)
-        if let Some(bias) = params.attn_bias {
-            attn_scores = attn_scores + bias.clone();
+        if let Some(bias) = params.attn_bias.clone() {
+            attn_scores = attn_scores + bias;
         }
 
         // Optional sinks bias: append as a sentinel column and then discard after softmax.
         let weights = if let Some(sinks) = params.sinks {
-            // sinks: [kvH, groups] -> [nH]
-            let sinks = sinks.clone().reshape([self.kv_heads * groups]);
-            // [1, nH, 1, 1] -> [B, nH, Tq, 1]
-            let mut s = sinks.reshape([1, self.n_heads, 1, 1]);
-            s = s.repeat_dim(0, batch_size);
-            s = s.repeat_dim(2, seq_len);
-            // concat on last dim
-            let attn_scores_cat = Tensor::cat(vec![attn_scores.clone(), s], 3);
-            let w_all = if self.quiet_softmax {
-                quiet_softmax(attn_scores_cat, 3)
-            } else {
-                softmax(attn_scores_cat, 3)
-            };
-            // discard sink column
-            w_all.slice([0..batch_size, 0..self.n_heads, 0..seq_len, 0..active_len])
-        } else if self.quiet_softmax {
-            quiet_softmax(attn_scores, 3)
+            let sinks = sinks.clone().reshape([self.kv_heads * groups]); // [nH]
+            crate::attention::apply_sinks_then_softmax(
+                attn_scores,
+                sinks,
+                batch_size,
+                self.n_heads,
+                seq_len,
+                active_len,
+                self.quiet_softmax,
+            )
         } else {
-            softmax(attn_scores, 3)
+            crate::attention::apply_bias_and_softmax(attn_scores, None, self.quiet_softmax)
         };
 
         let context = weights.matmul(v_exp);
