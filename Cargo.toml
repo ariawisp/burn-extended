@@ -25,3 +25,5 @@ std = ["burn-core/std"]
 [dev-dependencies]
 winit = "0.29"
 clap = { version = "4", features = ["derive"], default-features = true }
+wgpu = "0.26"
+pollster = "0.3"
