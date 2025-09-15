@@ -44,3 +44,8 @@ assert!(result.is_success());
 Open items
 - Define the minimal head to project hidden states to action space.
 - Provide a compact state↔tokens↔actions encoding/decoding format.
+
+Example: winit control loop
+```bash
+cargo run -p burn-extended --example matrix_game2_winit
+```

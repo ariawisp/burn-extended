@@ -22,3 +22,7 @@ safetensors = { version = "0.4", default-features = true, optional = true }
 default = ["std"]
 std = ["burn-core/std"]
 store = ["dep:burn-store", "dep:safetensors"]
+
+[dev-dependencies]
+winit = "0.29"
+clap = { version = "4", features = ["derive"], default-features = true }
