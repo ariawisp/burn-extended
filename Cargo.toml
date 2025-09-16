@@ -27,6 +27,8 @@ wgpu = "26.0.1"
 serde_json = "1"
 anyhow = "1"
 openai_harmony = { package = "openai-harmony", path = "../harmony" }
+uuid = { version = "1", features = ["std", "fast-rng"] }
+half = { version = "2", features = ["std"] }
 
 [features]
 default = ["std"]

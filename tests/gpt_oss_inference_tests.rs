@@ -22,6 +22,8 @@ fn gpt_oss_ar_model_basic_generation() {
         n_heads: 4,
         kv_heads: 2,
         ffn_hidden: 128,
+        num_experts: 4,
+        experts_per_token: 2,
         dropout: 0.0,
         swiglu_alpha: 1.0,
         swiglu_limit: 7.0,
@@ -33,6 +35,12 @@ fn gpt_oss_ar_model_basic_generation() {
         sink_tokens: 0,
         window_policy: burn_extended::cache::WindowPolicy::Fixed(64),
         max_seq_len: 128,
+        learned_sinks: true,
+        use_ntk_yarn: false,
+        rope_scaling_factor: 32.0,
+        rope_initial_context: 4096.0,
+        rope_ntk_alpha: 1.0,
+        rope_ntk_beta: 32.0,
     };
     let model = cfg.init::<TB>(&device);
 

@@ -20,6 +20,8 @@ fn main() {
         n_heads: 8,
         kv_heads: 2,
         ffn_hidden: 1024,
+        num_experts: 8,
+        experts_per_token: 4,
         dropout: 0.0,
         swiglu_alpha: 1.0,
         swiglu_limit: 7.0,
@@ -84,4 +86,3 @@ fn main() {
     let outputs = generate::<B, _>(&model, &device, &prompts, gen_cfg);
     println!("gpt-oss infer (demo) output lens: {:?}", outputs.iter().map(|t| t.len()).collect::<Vec<_>>());
 }
-

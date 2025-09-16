@@ -35,7 +35,7 @@ fn dequant_mxfp4(blocks_view: &TensorView, scales_view: &TensorView) -> TensorDa
     // Scales are int8 stored in u8 buffer; convert to i32 then subtract bias 127
     let mut out = vec![0f32; rows_total * b * 2];
     for r in 0..rows_total {
-        let scale_u8 = scales_bytes[r] as i8 as i32 - 127; // 2^exp via ldexp
+        let scale_i = scales_bytes[r] as i32 - 127; // cast as unsigned -> int, then bias
         for i in 0..b {
             let byte = blocks_bytes[r * b + i];
             let lo = (byte & 0x0F) as usize;
@@ -43,7 +43,7 @@ fn dequant_mxfp4(blocks_view: &TensorView, scales_view: &TensorView) -> TensorDa
             let v_lo = FP4_VALUES[lo];
             let v_hi = FP4_VALUES[hi];
             let idx = r * (b * 2) + (i * 2);
-            let scale = (2.0f32).powi(scale_u8);
+            let scale = (2.0f32).powi(scale_i);
             out[idx] = v_lo * scale;
             out[idx + 1] = v_hi * scale;
         }
@@ -51,6 +51,31 @@ fn dequant_mxfp4(blocks_view: &TensorView, scales_view: &TensorView) -> TensorDa
     let mut shape: Vec<usize> = blocks_shape.to_vec();
     *shape.last_mut().unwrap() = b * 2;
     TensorData::new(out, shape)
+}
+
+/// Test helper: dequantize MXFP4 from raw byte slices with given shapes.
+pub fn dequant_mxfp4_bytes(
+    blocks: &[u8],
+    blocks_shape: &[usize],
+    scales: &[u8],
+    scales_shape: &[usize],
+) -> Vec<f32> {
+    let rows_total: usize = scales_shape.iter().product();
+    let b = *blocks_shape.last().unwrap();
+    let mut out = vec![0f32; rows_total * b * 2];
+    for r in 0..rows_total {
+        let scale_i = scales[r] as i32 - 127;
+        let scale = (2.0f32).powi(scale_i);
+        for i in 0..b {
+            let byte = blocks[r * b + i];
+            let lo = (byte & 0x0F) as usize;
+            let hi = (byte >> 4) as usize;
+            let idx = r * (b * 2) + (i * 2);
+            out[idx] = FP4_VALUES[lo] * scale;
+            out[idx + 1] = FP4_VALUES[hi] * scale;
+        }
+    }
+    out
 }
 
 /// Load MXFP4 tensors and apply to a model after dequantization to f32/bf16.

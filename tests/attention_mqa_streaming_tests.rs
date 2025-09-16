@@ -156,9 +156,10 @@ fn streaming_mqa_uses_module_sinks_when_set() {
     let mut attn = StreamingMultiQueryAttentionConfig::new(d_model, n_heads, kv_heads)
         .with_dropout(0.0)
         .init::<TB>(&device);
-    // Set a simple sinks vector [n_heads]
-    let sinks = Tensor::<TB, 1>::from_floats([0.0; 4], &device);
-    attn.sinks_weight = Some(sinks);
+    // Set a simple learned sinks param with zeros shape [kv_heads, groups]
+    let groups = n_heads / kv_heads;
+    let sinks = Tensor::<TB, 2>::zeros([kv_heads, groups], &device);
+    attn.sinks = Some(burn_core::module::Param::from_tensor(sinks));
 
     let mut cache = StreamingMqaCache::new(&device, b, 32, kv_heads, d_model / n_heads, 0);
     let x = Tensor::<TB, 3>::random([b, t, d_model], Distribution::Default, &device);
