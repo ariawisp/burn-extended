@@ -16,7 +16,7 @@ workspace = true
 burn-core   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-core",   default-features = false }
 burn-tensor = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-tensor", default-features = false }
 burn-store  = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-store",  default-features = false }
-safetensors = { version = "0.4", default-features = true }
+safetensors = { version = "0.6.2", default-features = true }
 burn-wgpu   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-wgpu",   default-features = false }
 
 [features]
@@ -24,8 +24,8 @@ default = ["std"]
 std = ["burn-core/std"]
 
 [dev-dependencies]
-winit = "0.29"
-clap = { version = "4", features = ["derive"], default-features = true }
-wgpu = "0.26"
-pollster = "0.3"
+winit = "0.30.12"
+clap = { version = "4.5.47", features = ["derive"], default-features = true }
+wgpu = "26.0.1"
+pollster = "0.4.0"
 burn-ndarray = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-ndarray", default-features = false, features = ["std"] }
