@@ -6,6 +6,7 @@ extern crate alloc;
 use burn_core as burn;
 
 pub mod attention;
+pub mod activation;
 pub mod rope;
 pub mod sampling;
 pub mod generate;
@@ -15,3 +16,4 @@ pub mod loader;
 pub mod image;
 pub mod video;
 pub mod diffusion;
+pub mod decoder;
