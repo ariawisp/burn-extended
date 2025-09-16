@@ -2,6 +2,7 @@ use burn_core as burn;
 
 use burn::module::Module;
 use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
+use burn_store::safetensors::SafetensorsError;
 use burn_tensor::backend::Backend;
 
 use std::path::Path;
@@ -19,11 +20,12 @@ pub fn load_apply_file<B: Backend, M>(
     model: &mut M,
     path: &Path,
     cfg: &SimpleLoadConfig,
-) -> Result<ApplyResult, burn_store::safetensors::SafetensorsError>
+) -> Result<ApplyResult, SafetensorsError>
 where
     M: Module<B> + Clone,
 {
-    let mut store = SafetensorsStore::from_file(path);
+    let bytes = std::fs::read(path).map_err(|err| SafetensorsError::Other(err.to_string()))?;
+    let mut store = SafetensorsStore::from_bytes(Some(bytes));
     if cfg.from_pytorch {
         store = store.with_from_adapter(PyTorchToBurnAdapter);
     }

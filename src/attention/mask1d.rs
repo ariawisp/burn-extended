@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Bool, Int, Shape, Tensor, backend::Backend};
+use burn::tensor::{Bool, Tensor, backend::Backend};
 
 /// Generate a 1D padding mask from sequence lengths: [B, max_len], true marks padding.
 pub fn lengths_to_mask<B: Backend>(lengths: &[usize], max_len: usize, device: &B::Device) -> Tensor<B, 2, Bool> {

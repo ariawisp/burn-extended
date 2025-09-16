@@ -2,6 +2,7 @@ use burn_core as burn;
 extern crate alloc;
 
 use burn::tensor::{Int, Tensor, backend::Backend};
+use burn_tensor::{TensorData, activation::softmax};
 
 /// Basic logits processing configuration for sampling.
 #[derive(Clone, Copy, Debug, Default)]
@@ -16,7 +17,7 @@ pub struct SamplerConfig {
 /// Apply temperature scaling to logits. No-op if `temperature <= 0` or `temperature == 1`.
 pub fn apply_temperature<B: Backend>(logits: Tensor<B, 2>, temperature: f32) -> Tensor<B, 2> {
     if temperature > 0.0 && (temperature - 1.0).abs() > core::f32::EPSILON {
-        logits / Tensor::from_floats([temperature], &logits.device()).unsqueeze()
+        logits.div_scalar(temperature)
     } else {
         logits
     }
@@ -28,10 +29,14 @@ pub fn apply_top_k_cpu<B: Backend>(logits: Tensor<B, 2>, k: usize) -> Tensor<B, 
     if k == 0 { return logits; }
     let device = logits.device();
     let [b, v] = logits.dims();
-    let data = logits.into_data().convert::<f32>();
+    let data = logits
+        .into_data()
+        .convert::<f32>()
+        .into_vec::<f32>()
+        .expect("logits to f32");
     let mut out: Vec<f32> = vec![f32::NEG_INFINITY; b * v];
     for bi in 0..b {
-        let row = &data.value[bi * v..(bi + 1) * v];
+        let row = &data[bi * v..(bi + 1) * v];
         // Indices sorted by logit descending
         let mut idx: Vec<usize> = (0..v).collect();
         idx.sort_unstable_by(|&i, &j| row[j].partial_cmp(&row[i]).unwrap_or(core::cmp::Ordering::Equal));
@@ -39,7 +44,7 @@ pub fn apply_top_k_cpu<B: Backend>(logits: Tensor<B, 2>, k: usize) -> Tensor<B, 
             out[bi * v + col] = row[col];
         }
     }
-    Tensor::<B, 2>::from_floats(out, &device).reshape([b, v])
+    Tensor::<B, 2>::from_floats(TensorData::new(out, [b, v]), &device)
 }
 
 /// Apply repetition, frequency and presence penalties using token history.
@@ -56,7 +61,11 @@ pub fn apply_penalties_cpu<B: Backend>(
     }
     let [b, v] = logits.dims();
     let device = logits.device();
-    let mut out = logits.into_data().convert::<f32>().value;
+    let mut out = logits
+        .into_data()
+        .convert::<f32>()
+        .into_vec::<f32>()
+        .expect("logits to f32");
     let rep = repetition_penalty.unwrap_or(1.0);
     let freq = frequency_penalty.unwrap_or(0.0);
     let pres = presence_penalty.unwrap_or(0.0);
@@ -84,33 +93,35 @@ pub fn apply_penalties_cpu<B: Backend>(
             }
         }
     }
-    Tensor::<B, 2>::from_floats(out, &device).reshape([b, v])
+    Tensor::<B, 2>::from_floats(TensorData::new(out, [b, v]), &device)
 }
 
 /// Greedy sampling (argmax).
 pub fn sample_greedy<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 1, Int> {
     // argmax along vocab dim
     let [b, _v] = logits.dims();
-    let indices = logits.argmax(1).reshape([b]);
-    indices.int()
+    logits.argmax(1).reshape([b])
 }
 
 /// Simple CPU multinomial sampling after softmax. Suitable for demos.
 pub fn sample_multinomial_cpu<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 1, Int> {
     use rand::distr::{weighted::WeightedIndex, Distribution};
-    use rand::thread_rng;
     let [b, v] = logits.dims();
     let device = logits.device();
     let mut out = vec![0i64; b];
-    let probs = logits.softmax(1).into_data().convert::<f32>().value;
-    let mut rng = thread_rng();
+    let probs = softmax(logits, 1)
+        .into_data()
+        .convert::<f32>()
+        .into_vec::<f32>()
+        .expect("probs to f32");
+    let mut rng = rand::rng();
     for bi in 0..b {
         let row = &probs[bi * v..(bi + 1) * v];
         let dist = WeightedIndex::new(row.iter().map(|&p| if p.is_finite() && p > 0.0 { p } else { 0.0 })).unwrap();
         let sample = dist.sample(&mut rng) as i64;
         out[bi] = sample;
     }
-    Tensor::<B, 1, Int>::from_ints(out, &device)
+    Tensor::<B, 1, Int>::from_ints(TensorData::new(out, [b]), &device)
 }
 
 /// Apply typical processors to logits and sample next tokens.

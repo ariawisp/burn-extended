@@ -72,8 +72,9 @@ impl<B: Backend> LinearAttention<B> {
         let q = self.attn_linear(input.query, &self.query);
         let mut k = self.attn_linear(input.key, &self.key);
         let mut v = self.attn_linear(input.value, &self.value);
-        if let Some(mask) = input.mask_pad.clone() {
-            let mask = mask.reshape([batch_size, 1, mask.dims()[1], 1]);
+        if let Some(mask) = input.mask_pad.as_ref() {
+            let dims = mask.dims();
+            let mask = mask.clone().reshape([batch_size, 1, dims[1], 1]);
             k = k.mask_fill(mask.clone(), 0.0);
             v = v.mask_fill(mask, 0.0);
         }

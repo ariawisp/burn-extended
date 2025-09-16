@@ -8,7 +8,6 @@ use burn::{
 };
 
 use super::AttnWindow;
-use burn_tensor::activation::{quiet_softmax, softmax};
 
 /// Configuration for streaming multi-query attention (MQA/GQA).
 #[derive(Config, Debug)]
@@ -344,8 +343,8 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         let mut attn_scores = crate::attention::compute_scores(q, k_exp, self.d_k, &self.dropout);
 
         // Additive attention bias (already shaped to window)
-        if let Some(bias) = params.attn_bias.clone() {
-            attn_scores = attn_scores + bias;
+        if let Some(bias) = params.attn_bias {
+            attn_scores = attn_scores + bias.clone();
         }
 
         // Optional sinks bias: append as a sentinel column and then discard after softmax.

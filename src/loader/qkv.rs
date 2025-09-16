@@ -1,7 +1,7 @@
 use burn_core as burn;
 
 use burn::module::Module;
-use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapshot};
+use burn_store::{ApplyResult, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapshot};
 use burn_store::safetensors::SafetensorsError;
 use burn_tensor::{DType, TensorData, backend::Backend};
 
@@ -62,9 +62,9 @@ fn split_along_last_dim(bytes: &[u8], shape: &[usize], dtype: DType, sizes: (usi
     *v_shape.last_mut().unwrap() = v;
 
     (
-        TensorData::new(burn_tensor::Bytes::from_bytes_vec(qb), q_shape, dtype),
-        TensorData::new(burn_tensor::Bytes::from_bytes_vec(kb), k_shape, dtype),
-        TensorData::new(burn_tensor::Bytes::from_bytes_vec(vb), v_shape, dtype),
+        TensorData::from_bytes(qb, q_shape, dtype),
+        TensorData::from_bytes(kb, k_shape, dtype),
+        TensorData::from_bytes(vb, v_shape, dtype),
     )
 }
 
@@ -73,7 +73,8 @@ fn view_to_snapshot(name: &str, view: &TensorView) -> Result<TensorSnapshot, Saf
     let shape = view.shape().to_vec();
     let path_parts: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
     let bytes = view.data().to_vec();
-    let data_fn = alloc::rc::Rc::new(move || TensorData::new(burn_tensor::Bytes::from_bytes_vec(bytes.clone()), shape.clone(), dtype));
+    let shape_for_fn = shape.clone();
+    let data_fn = alloc::rc::Rc::new(move || TensorData::from_bytes(bytes.clone(), shape_for_fn.clone(), dtype));
     Ok(TensorSnapshot::from_closure(
         data_fn,
         dtype,
@@ -98,11 +99,12 @@ where
     M: Module<B> + Clone,
 {
     use std::fs;
-    let data = fs::read(path)?;
-    let st = SafeTensors::deserialize(&data)?;
+    let data = fs::read(path).map_err(|err| SafetensorsError::Other(err.to_string()))?;
+    let st = SafeTensors::deserialize(&data)
+        .map_err(|err| SafetensorsError::Other(err.to_string()))?;
 
     use hashbrown::HashSet;
-    let mut fused_names = HashSet::new();
+    let mut fused_names: HashSet<&str> = HashSet::new();
     for s in splits {
         fused_names.insert(s.fused_weight.as_str());
         if let Some(b) = &s.fused_bias { fused_names.insert(b.as_str()); }
@@ -111,8 +113,8 @@ where
     let mut snapshots: Vec<TensorSnapshot> = Vec::new();
 
     for (name, view) in st.tensors() {
-        if fused_names.contains(name) { continue; }
-        let snap = view_to_snapshot(name, &view)?;
+        if fused_names.contains(name.as_str()) { continue; }
+        let snap = view_to_snapshot(&name, &view)?;
         let snap = if from_pytorch {
             if let Some(adapted) = PyTorchToBurnAdapter.adapt_tensor(&snap) { adapted } else { continue }
         } else { snap };

@@ -12,8 +12,9 @@ pub fn swiglu_clamp<B: Backend, const D: usize>(
     alpha: f32,
     clamp_limit: Option<f32>,
 ) -> Tensor<B, D> {
-    let dims = tensor.dims();
-    let last = dims[dims.len() - 1];
+    let mut dims = tensor.dims();
+    let last_index = dims.len() - 1;
+    let last = dims[last_index];
     assert!(last % 2 == 0, "SwiGLU input last dimension must be even");
     let half = last / 2;
 
@@ -28,10 +29,9 @@ pub fn swiglu_clamp<B: Backend, const D: usize>(
     let mut activated = swish * value;
 
     if let Some(limit) = clamp_limit {
-        activated = activated.clamp_scalar(-limit, limit);
+        activated = activated.clamp(-limit, limit);
     }
 
-    let mut final_shape = dims.to_vec();
-    final_shape[dims.len() - 1] = half;
-    activated.reshape(final_shape)
+    dims[last_index] = half;
+    activated.reshape(dims)
 }
