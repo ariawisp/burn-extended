@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 
 use burn::backend::wgpu::{self, Wgpu as B, WgpuDevice};
-use burn::nn::RotaryEncodingConfig;
 use burn::tensor::{Distribution, Tensor};
 
 use burn_extended::attention::{

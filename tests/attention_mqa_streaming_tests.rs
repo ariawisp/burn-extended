@@ -28,8 +28,7 @@ fn streaming_mqa_window_matches_full() {
         .init::<TB>(&device);
 
     let mut cache_full = StreamingMqaCache::new(&device, b, 64, kv_heads, d_model / n_heads, 0);
-    let mut cache_window =
-        StreamingMqaCache::new(&device, b, 64, kv_heads, d_model / n_heads, 0);
+    let mut cache_window = StreamingMqaCache::new(&device, b, 64, kv_heads, d_model / n_heads, 0);
 
     let out_full = attn.forward_streaming(
         x.clone(),
@@ -89,8 +88,7 @@ fn streaming_mqa_with_chunks_consistent() {
         },
     );
 
-    let mut cache_chunked =
-        StreamingMqaCache::new(&device, b, 64, kv_heads, d_model / n_heads, 0);
+    let mut cache_chunked = StreamingMqaCache::new(&device, b, 64, kv_heads, d_model / n_heads, 0);
     let chunk = 4;
     let mut outputs = Vec::new();
     for i in 0..(t / chunk) {

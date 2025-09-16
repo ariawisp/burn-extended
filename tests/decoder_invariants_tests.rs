@@ -12,7 +12,9 @@ fn device() -> <TB as Backend>::Device {
 #[test]
 fn decoder_zero_input_is_finite_and_shaped() {
     let device = device();
-    let config = DecoderBlockConfig::new(32, 4, 4, 64).with_dropout(0.0).with_swiglu_limit(5.0);
+    let config = DecoderBlockConfig::new(32, 4, 4, 64)
+        .with_dropout(0.0)
+        .with_swiglu_limit(5.0);
     let block = config.init::<TB>(&device);
 
     let hidden = Tensor::<TB, 3>::zeros([2, 8, 32], &device);
@@ -25,7 +27,9 @@ fn decoder_zero_input_is_finite_and_shaped() {
 #[test]
 fn decoder_accepts_masks_and_bias() {
     let device = device();
-    let config = DecoderBlockConfig::new(16, 2, 2, 32).with_dropout(0.0).with_swiglu_limit(5.0);
+    let config = DecoderBlockConfig::new(16, 2, 2, 32)
+        .with_dropout(0.0)
+        .with_swiglu_limit(5.0);
     let block = config.init::<TB>(&device);
 
     let b = 2;
@@ -34,7 +38,8 @@ fn decoder_accepts_masks_and_bias() {
     // Pad mask [B, T]
     let mask_pad = burn_extended::attention::lengths_to_mask::<TB>(&[t, t / 2], t, &device);
     // Attn mask [B, T, T]
-    let mask_attn = burn_extended::attention::generate_windowed_causal_mask::<TB>(b, t, Some(3), 1, &device);
+    let mask_attn =
+        burn_extended::attention::generate_windowed_causal_mask::<TB>(b, t, Some(3), 1, &device);
     // Bias [B, nH=2, T, Tk] -- use Tk=T here
     let attn_bias = Tensor::<TB, 4>::zeros([b, 2, t, t], &device);
 

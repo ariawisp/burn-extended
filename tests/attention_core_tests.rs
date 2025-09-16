@@ -40,8 +40,8 @@ fn apply_bias_and_softmax_behaves() {
 fn apply_sinks_then_softmax_appends_and_slices() {
     let device = device();
     // attn_scores zeros: [B=1, H=2, Tq=1, Tk=3]
-    let scores = Tensor::<TB, 1>::from_floats([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], &device)
-        .reshape([1, 2, 1, 3]);
+    let scores =
+        Tensor::<TB, 1>::from_floats([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], &device).reshape([1, 2, 1, 3]);
     // sinks per head: [ln(1)=0, ln(9)]
     let sinks = Tensor::<TB, 1>::from_floats([0.0, 9.0_f32.ln()], &device);
     let w = burn_extended::attention::apply_sinks_then_softmax(scores, sinks, 1, 2, 1, 3, false);

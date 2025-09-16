@@ -1,6 +1,8 @@
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
-use burn_extended::attention::{evict_and_roll_mha, evict_and_roll_mqa, StreamingMhaCache, StreamingMqaCache};
+use burn_extended::attention::{
+    evict_and_roll_mha, evict_and_roll_mqa, StreamingMhaCache, StreamingMqaCache,
+};
 use burn_ndarray::NdArray;
 
 type TB = NdArray<f32>;
@@ -24,10 +26,8 @@ fn evict_and_roll_mha_basic() {
     // We set K[b=0, t, h=0, d=0] = t as f32
     let k_vals: Vec<f32> = (0..cap).map(|i| i as f32).collect();
     let v_vals: Vec<f32> = (0..cap).map(|i| (100 + i) as f32).collect();
-    let k_tensor = Tensor::<TB, 1>::from_floats(k_vals.as_slice(), &device)
-        .reshape([1, cap, 1, 1]);
-    let v_tensor = Tensor::<TB, 1>::from_floats(v_vals.as_slice(), &device)
-        .reshape([1, cap, 1, 1]);
+    let k_tensor = Tensor::<TB, 1>::from_floats(k_vals.as_slice(), &device).reshape([1, cap, 1, 1]);
+    let v_tensor = Tensor::<TB, 1>::from_floats(v_vals.as_slice(), &device).reshape([1, cap, 1, 1]);
     cache.k = k_tensor;
     cache.v = v_tensor;
     cache.local_end_index = cap; // buffer full
@@ -59,11 +59,13 @@ fn evict_and_roll_mqa_basic() {
 
     // For kv_heads=2, assign time index as floats duplicated across heads for clarity
     let k_vals: Vec<f32> = (0..cap * kv_heads).map(|i| (i / kv_heads) as f32).collect();
-    let v_vals: Vec<f32> = (0..cap * kv_heads).map(|i| (200 + (i / kv_heads)) as f32).collect();
-    let k_tensor = Tensor::<TB, 1>::from_floats(k_vals.as_slice(), &device)
-        .reshape([1, cap, kv_heads, 1]);
-    let v_tensor = Tensor::<TB, 1>::from_floats(v_vals.as_slice(), &device)
-        .reshape([1, cap, kv_heads, 1]);
+    let v_vals: Vec<f32> = (0..cap * kv_heads)
+        .map(|i| (200 + (i / kv_heads)) as f32)
+        .collect();
+    let k_tensor =
+        Tensor::<TB, 1>::from_floats(k_vals.as_slice(), &device).reshape([1, cap, kv_heads, 1]);
+    let v_tensor =
+        Tensor::<TB, 1>::from_floats(v_vals.as_slice(), &device).reshape([1, cap, kv_heads, 1]);
     cache.k = k_tensor;
     cache.v = v_tensor;
     cache.local_end_index = cap;
