@@ -97,8 +97,8 @@ pub fn sample_greedy<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 1, Int> {
 
 /// Simple CPU multinomial sampling after softmax. Suitable for demos.
 pub fn sample_multinomial_cpu<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 1, Int> {
-    use rand::distributions::WeightedIndex;
-    use rand::prelude::*;
+    use rand::distr::{weighted::WeightedIndex, Distribution};
+    use rand::thread_rng;
     let [b, v] = logits.dims();
     let device = logits.device();
     let mut out = vec![0i64; b];

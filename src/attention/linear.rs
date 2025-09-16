@@ -1,5 +1,5 @@
 use burn_core as burn;
-use burn::serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use burn::module::{Content, DisplaySettings, Ignored, Module, ModuleDisplay};
 use burn::nn::{Initializer, Linear, LinearConfig};

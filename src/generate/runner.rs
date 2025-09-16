@@ -19,14 +19,14 @@ impl StreamState {
 impl StreamState {
     pub fn params_mha<B: Backend>(
         &self,
-        rope: Option<&burn::nn::rope_encoding::RotaryEncoding<B>>,
+        rope: Option<&burn::nn::RotaryEncoding<B>>,
     ) -> StreamingParams<B> {
         StreamingParams { rope, start_pos: self.start_pos, window: self.window }
     }
 
     pub fn params_mqa<B: Backend>(
         &self,
-        rope: Option<&burn::nn::rope_encoding::RotaryEncoding<B>>,
+        rope: Option<&burn::nn::RotaryEncoding<B>>,
         sinks: Option<&burn::tensor::Tensor<B, 2>>,
     ) -> StreamingMqaParams<B> {
         StreamingMqaParams { rope, start_pos: self.start_pos, window: self.window, sinks, attn_bias: None }

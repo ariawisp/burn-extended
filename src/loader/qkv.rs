@@ -5,7 +5,7 @@ use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapsh
 use burn_store::safetensors::SafetensorsError;
 use burn_tensor::{DType, TensorData, backend::Backend};
 
-use core::path::Path;
+use std::path::Path;
 
 use safetensors::{tensor::TensorView, SafeTensors};
 
