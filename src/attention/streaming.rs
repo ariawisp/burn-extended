@@ -184,8 +184,6 @@ pub struct StreamingParams<'a, B: Backend> {
 pub(crate) struct CacheView<B: Backend> {
     pub k: Tensor<B, 4>,
     pub v: Tensor<B, 4>,
-    pub active_len: usize,
-    pub local_end: usize,
 }
 
 /// Update the rolling cache with the newly produced keys/values and return the active
@@ -292,12 +290,7 @@ pub(crate) fn update_cache_window<B: Backend>(
         .slice([0..batch_size, start..local_end, 0..n_heads, 0..d_k])
         .swap_dims(1, 2);
 
-    CacheView {
-        k: k_win,
-        v: v_win,
-        active_len,
-        local_end,
-    }
+    CacheView { k: k_win, v: v_win }
 }
 
 impl<B: Backend> StreamingMultiHeadAttention<B> {
