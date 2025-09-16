@@ -1,3 +1,4 @@
+use burn_core as burn;
 use burn::backend::Backend;
 use burn_extended::attention::{
     generate_chunked_causal_mask_1d,

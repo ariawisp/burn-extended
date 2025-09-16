@@ -18,7 +18,7 @@ pub struct SamplerConfig {
 pub fn apply_temperature<B: Backend>(logits: Tensor<B, 2>, temperature: f32) -> Tensor<B, 2> {
     if temperature > 0.0 && (temperature - 1.0).abs() > core::f32::EPSILON {
         // Clone logits to avoid moving and use default tensor shape inference
-        logits.clone() / Tensor::from_floats([temperature], &logits.device()).unsqueeze()
+        logits.clone() / Tensor::<B, 1>::from_floats([temperature], &logits.device()).unsqueeze()
     } else {
         logits
     }
