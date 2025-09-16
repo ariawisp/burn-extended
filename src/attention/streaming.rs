@@ -180,6 +180,160 @@ pub struct StreamingParams<'a, B: Backend> {
     pub window: AttnWindow,
 }
 
+/// Windowed slice of the streaming cache returned after writing new keys and values.
+pub(crate) struct CacheView<B: Backend> {
+    pub k: Tensor<B, 4>,
+    pub v: Tensor<B, 4>,
+    pub active_len: usize,
+    pub local_end: usize,
+}
+
+/// Update the rolling cache with the newly produced keys/values and return the active
+/// window (respecting sink tokens and per-layer window configuration).
+///
+/// The input `k`/`v` tensors are `[B, n_heads, seq_len, d_k]` matching the current chunk.
+/// The returned tensors are `[B, n_heads, active_len, d_k]` ready for attention matmul.
+pub(crate) fn update_cache_window<B: Backend>(
+    cache: &mut StreamingMhaCache<B>,
+    k: Tensor<B, 4>,
+    v: Tensor<B, 4>,
+    start_pos: usize,
+    window: AttnWindow,
+) -> CacheView<B> {
+    let [batch_size, n_heads, seq_len, d_k] = k.dims();
+    let num_new = seq_len;
+    let current_end = start_pos + num_new;
+    debug_assert!(
+        current_end >= cache.global_end_index,
+        "start_pos must be non-decreasing",
+    );
+
+    let sink = cache.sink_tokens;
+    let cap = cache.cache_len;
+    let delta = current_end.saturating_sub(cache.global_end_index);
+    let need = cache.local_end_index + delta;
+
+    if need > cap {
+        let num_evicted = need - cap;
+        let num_rolled = cache
+            .local_end_index
+            .saturating_sub(num_evicted + sink);
+        if num_rolled > 0 {
+            let src_start = sink + num_evicted;
+            let src_end = sink + num_evicted + num_rolled;
+
+            let rolled_k = cache.k.clone().slice([
+                0..batch_size,
+                src_start..src_end,
+                0..n_heads,
+                0..d_k,
+            ]);
+            cache.k.inplace(|t| {
+                t.slice_assign(
+                    [
+                        0..batch_size,
+                        sink..sink + num_rolled,
+                        0..n_heads,
+                        0..d_k,
+                    ],
+                    rolled_k,
+                )
+            });
+
+            let rolled_v = cache.v.clone().slice([
+                0..batch_size,
+                src_start..src_end,
+                0..n_heads,
+                0..d_k,
+            ]);
+            cache.v.inplace(|t| {
+                t.slice_assign(
+                    [
+                        0..batch_size,
+                        sink..sink + num_rolled,
+                        0..n_heads,
+                        0..d_k,
+                    ],
+                    rolled_v,
+                )
+            });
+        }
+
+        cache.local_end_index = cache.local_end_index + delta - num_evicted;
+    } else {
+        cache.local_end_index += delta;
+    }
+
+    let local_end = cache.local_end_index;
+    let local_start = local_end - num_new;
+    let k_rs = k.swap_dims(1, 2);
+    let v_rs = v.swap_dims(1, 2);
+
+    cache.k.inplace(|t| {
+        t.slice_assign(
+            [
+                0..batch_size,
+                local_start..local_end,
+                0..n_heads,
+                0..d_k,
+            ],
+            k_rs,
+        )
+    });
+    cache.v.inplace(|t| {
+        t.slice_assign(
+            [
+                0..batch_size,
+                local_start..local_end,
+                0..n_heads,
+                0..d_k,
+            ],
+            v_rs,
+        )
+    });
+    cache.global_end_index = current_end;
+
+    let active_len = match window {
+        AttnWindow::Full => local_end,
+        AttnWindow::Window(w) => {
+            debug_assert!(
+                cache.sink_tokens + w <= cache.cache_len,
+                "window+sink exceeds cache capacity",
+            );
+            sink + w.min(local_end.saturating_sub(sink))
+        }
+    };
+    let start = local_end.saturating_sub(active_len);
+
+    let k_win = cache
+        .k
+        .clone()
+        .slice([
+            0..batch_size,
+            start..local_end,
+            0..n_heads,
+            0..d_k,
+        ])
+        .swap_dims(1, 2);
+    let v_win = cache
+        .v
+        .clone()
+        .slice([
+            0..batch_size,
+            start..local_end,
+            0..n_heads,
+            0..d_k,
+        ])
+        .swap_dims(1, 2);
+
+    CacheView {
+        k: k_win,
+        v: v_win,
+        active_len,
+        local_end,
+    }
+}
+
 impl<B: Backend> StreamingMultiHeadAttention<B> {
     /// Forward pass using the streaming cache with optional attention window.
     pub fn forward_streaming(
@@ -214,131 +368,9 @@ impl<B: Backend> StreamingMultiHeadAttention<B> {
         };
 
         // Update rolling cache with new tokens.
-        let num_new = seq_len;
-        let current_end = params.start_pos + num_new;
-        debug_assert!(
-            current_end >= cache.global_end_index,
-            "start_pos must be non-decreasing",
-        );
-        let sink = cache.sink_tokens;
-        let cap = cache.cache_len;
-
-        let delta = current_end.saturating_sub(cache.global_end_index);
-        let need = cache.local_end_index + delta;
-
-        if need > cap {
-            let num_evicted = need - cap;
-            let num_rolled = cache
-                .local_end_index
-                .saturating_sub(num_evicted + sink);
-            if num_rolled > 0 {
-                let src_start = sink + num_evicted;
-                let src_end = sink + num_evicted + num_rolled;
-
-                let rolled_k = cache.k.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ]);
-                cache.k.inplace(|t| {
-                    t.slice_assign(
-                        [
-                            0..batch_size,
-                            sink..sink + num_rolled,
-                            0..self.n_heads,
-                            0..self.d_k,
-                        ],
-                        rolled_k,
-                    )
-                });
-
-                let rolled_v = cache.v.clone().slice([
-                    0..batch_size,
-                    src_start..src_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ]);
-                cache.v.inplace(|t| {
-                    t.slice_assign(
-                        [
-                            0..batch_size,
-                            sink..sink + num_rolled,
-                            0..self.n_heads,
-                            0..self.d_k,
-                        ],
-                        rolled_v,
-                    )
-                });
-            }
-
-            cache.local_end_index = cache.local_end_index + delta - num_evicted;
-        } else {
-            cache.local_end_index += delta;
-        }
-
-        // Write newest keys/values at the end of the buffer.
-        let local_end = cache.local_end_index;
-        let local_start = local_end - num_new;
-        let k_rs = k.swap_dims(1, 2);
-        let v_rs = v.swap_dims(1, 2);
-
-        cache.k.inplace(|t| {
-            t.slice_assign(
-                [
-                    0..batch_size,
-                    local_start..local_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ],
-                k_rs,
-            )
-        });
-        cache.v.inplace(|t| {
-            t.slice_assign(
-                [
-                    0..batch_size,
-                    local_start..local_end,
-                    0..self.n_heads,
-                    0..self.d_k,
-                ],
-                v_rs,
-            )
-        });
-        cache.global_end_index = current_end;
-
-        let active_len = match params.window {
-            AttnWindow::Full => local_end,
-            AttnWindow::Window(w) => {
-                debug_assert!(
-                    cache.sink_tokens + w <= cache.cache_len,
-                    "window+sink exceeds cache capacity",
-                );
-                sink + w.min(local_end.saturating_sub(sink))
-            }
-        };
-        let start = local_end.saturating_sub(active_len);
-
-        let k_win = cache
-            .k
-            .clone()
-            .slice([
-                0..batch_size,
-                start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ])
-            .swap_dims(1, 2);
-        let v_win = cache
-            .v
-            .clone()
-            .slice([
-                0..batch_size,
-                start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ])
-            .swap_dims(1, 2);
+        let cache_view = update_cache_window(cache, k, v, params.start_pos, params.window);
+        let k_win = cache_view.k;
+        let v_win = cache_view.v;
 
         let mut attn_scores = q
             .matmul(k_win.transpose())

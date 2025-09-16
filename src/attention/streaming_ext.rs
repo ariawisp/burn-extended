@@ -7,8 +7,8 @@ use burn::{
     tensor::{Tensor, backend::Backend},
 };
 
-use super::AttnWindow;
-use burn_tensor::activation::{quiet_softmax, softmax};
+use super::{AttnWindow, StreamingMhaCache};
+use super::streaming::update_cache_window;
 
 /// Configuration for the extended streaming multi-head attention module.
 #[derive(Config, Debug)]
@@ -99,105 +99,28 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
     pub fn forward_streaming(
         &self,
         x: Tensor<B, 3>,
-        cache: &mut crate::attention::StreamingMhaCache<B>,
+        cache: &mut StreamingMhaCache<B>,
         params: ExtStreamingParams<B>,
     ) -> Tensor<B, 3> {
         let [batch_size, seq_len, _] = x.dims();
 
         let q = self.attention_linear(x.clone(), &self.query);
-        let mut k = self.attention_linear(x.clone(), &self.key);
-        let mut v = self.attention_linear(x, &self.value);
+        let k = self.attention_linear(x.clone(), &self.key);
+        let v = self.attention_linear(x, &self.value);
 
-        // Apply RoPE if provided
-        if let Some(rope) = params.rope {
+        let (q, k) = if let Some(rope) = params.rope {
             let q_rs = q.swap_dims(1, 2);
             let k_rs = k.swap_dims(1, 2);
-            k = rope.apply(k_rs, params.start_pos).swap_dims(1, 2);
-            // Here we keep applying to K and Q in the same way
-            let q_ro = rope.apply(q_rs, params.start_pos).swap_dims(1, 2);
-            // overwrite q
-            let _ = q_ro; // q is immutable; recompute below for simplicity
-        }
-
-        // Recompute q with rope applied if any
-        let q = if let Some(rope) = params.rope {
-            let q_rs = self.attention_linear(x.clone(), &self.query).swap_dims(1, 2);
-            rope.apply(q_rs, params.start_pos).swap_dims(1, 2)
+            let q_ro = rope.apply(q_rs, params.start_pos);
+            let k_ro = rope.apply(k_rs, params.start_pos);
+            (q_ro.swap_dims(1, 2), k_ro.swap_dims(1, 2))
         } else {
-            self.attention_linear(x.clone(), &self.query)
+            (q, k)
         };
 
-        // Update cache similarly to burn-core streaming attention.
-        let num_new = seq_len;
-        let current_end = params.start_pos + num_new;
-        let sink = cache.sink_tokens;
-        let cap = cache.cache_len;
-        let delta = current_end.saturating_sub(cache.global_end_index);
-        let need = cache.local_end_index + delta;
-
-        if need > cap {
-            let num_evicted = need - cap;
-            crate::attention::evict_and_roll_mha(
-                cache,
-                batch_size,
-                self.n_heads,
-                self.d_k,
-                sink,
-                num_evicted,
-            );
-            cache.local_end_index = cache.local_end_index + delta;
-        } else {
-            cache.local_end_index += delta;
-        }
-
-        let local_end = cache.local_end_index;
-        let local_start = local_end - num_new;
-        let k_rs = k.swap_dims(1, 2);
-        let v_rs = v.swap_dims(1, 2);
-        cache.k.inplace(|t| {
-            t.slice_assign([
-                0..batch_size,
-                local_start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ], k_rs)
-        });
-        cache.v.inplace(|t| {
-            t.slice_assign([
-                0..batch_size,
-                local_start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ], v_rs)
-        });
-        cache.global_end_index = current_end;
-
-        let active_len = match params.window {
-            AttnWindow::Full => local_end,
-            AttnWindow::Window(w) => sink + w.min(local_end.saturating_sub(sink)),
-        };
-        let start = local_end.saturating_sub(active_len);
-
-        let k_win = cache
-            .k
-            .clone()
-            .slice([
-                0..batch_size,
-                start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ])
-            .swap_dims(1, 2);
-        let v_win = cache
-            .v
-            .clone()
-            .slice([
-                0..batch_size,
-                start..local_end,
-                0..self.n_heads,
-                0..self.d_k,
-            ])
-            .swap_dims(1, 2);
+        let cache_view = update_cache_window(cache, k, v, params.start_pos, params.window);
+        let k_win = cache_view.k;
+        let v_win = cache_view.v;
 
         let attn_scores = crate::attention::compute_scores(q, k_win, self.d_k, &self.dropout);
         let attn_bias = params.attn_bias.cloned();
