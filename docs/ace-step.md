@@ -10,11 +10,11 @@ Key requirements
 - RoPE position encoding.
 - Autoregressive generation loop and sampling.
 
-What burn‑extended provides
-- Extended Streaming MHA: `attention::ExtStreamingMultiHeadAttention{Config}`
-  - Same projections and cache semantics as Burn’s streaming MHA.
-  - Additional `attn_bias: Option<&Tensor<_,4>>` term added to logits pre‑softmax.
+What burn-extended provides
+- Streaming attention: `attention::ExtStreamingMultiHeadAttention{Config}` wraps the baseline streaming MHA and adds an `attn_bias: Option<&Tensor<_,4>>` term pre-softmax.
 - Bias utilities: `bias::alibi_bias(...)` example and space for custom bias builders.
+- Diffusion schedulers: `diffusion::{FlowMatchEuler, FlowMatchHeun, FlowMatchPingPong}` implement the shared `DiffusionScheduler` trait with `retrieve_timesteps` for schedule resampling.
+- Guidance helpers: `diffusion::guidance::{cfg, cfg_double, apg, cfg_zero_star}` plus `MomentumBuffer` for APG-style conditioning.
 - Cache/window policies: `cache::MhaCacheManager` + `WindowPolicy`.
 - Generation tools: `sampling` processors + `generate` harness.
 
@@ -28,6 +28,11 @@ Sliding window
 RoPE
 - If standard RoPE is needed, use Burn’s `RotaryEncodingConfig::init` and pass into streaming params.
 - If extended context is desired later, use `rope::init_ntk_yarn(...)` from this repo.
+
+Diffusion schedulers and guidance
+- Choose a scheduler implementing `DiffusionScheduler`, call `set_timesteps(num_steps)`, then iterate `step(model_out, timestep, sample, omega)` using the sigmas/timesteps tensors.
+- `retrieve_timesteps` lets you resample Diffusers-style schedules when mixing training/inference step counts.
+- Pair the scheduler output with guidance helpers: `cfg`/`cfg_double` for classic classifier-free guidance, `apg` with a `MomentumBuffer` for ACE-Step's momentum projection, and `cfg_zero_star` when projecting onto high-rank negative prompts.
 
 Backend init and generation harness (sketch)
 ```rust

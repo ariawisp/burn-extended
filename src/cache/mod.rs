@@ -1,10 +1,8 @@
 use burn_core as burn;
 
 use burn::tensor::backend::Backend;
-use burn::nn::attention::StreamingMhaCache;
 
-use crate::attention::StreamingMqaCache;
-use crate::attention::AttnWindow;
+use crate::attention::{AttnWindow, StreamingMhaCache, StreamingMqaCache};
 
 /// Policy to determine per-layer attention windows.
 #[derive(Clone, Copy, Debug)]
@@ -70,4 +68,3 @@ impl<B: Backend> MhaCacheManager<B> {
     }
     pub fn cache_mut(&mut self, layer: usize) -> &mut StreamingMhaCache<B> { &mut self.caches[layer] }
 }
-

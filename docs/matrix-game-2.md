@@ -8,9 +8,11 @@ Key requirements
 - Streaming MHA over long sequences with sink tokens preserved across windows.
 - Simple token generation loop to interact with the environment.
 
-What burn‑extended provides
-- Extended streaming MHA: `attention::ExtStreamingMultiHeadAttention{Config}` works with Burn’s `StreamingMhaCache`, which supports `sink_tokens`.
+What burn-extended provides
+- Streaming attention: `attention::ExtStreamingMultiHeadAttention{Config}` works with the local `StreamingMhaCache`, preserving sink tokens while sliding the window.
 - Window policy helpers and a lightweight generation harness.
+- Video tokenization: `video::VideoPatchEmbedding` / `VideoUnpatchify` convert frame stacks to spatio-temporal patches and back for transformer blocks.
+- 3D RoPE: `rope::Rope3dEncoding` applies axial rotary encoding over (frames, height, width) with streaming offsets so cached chunks stay in sync.
 
 Sink tokens
 - Initialize the `StreamingMhaCache` with `sink_tokens > 0` to keep the first `sink_tokens` positions always attendable, regardless of the sliding window span.

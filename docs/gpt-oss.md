@@ -12,16 +12,18 @@ Key requirements
 - Standard transformer components (RMSNorm, SwiGLU with clamp) and a sampler.
 - Weight import from GPT‑OSS checkpoints (fused QKV → separate Q/K/V).
 
-What burn‑extended provides
-- Streaming MQA/GQA: `attention::StreamingMultiQueryAttention{Config}`
+What burn-extended provides
+- Streaming MHA/MQA: `attention::StreamingMultiHeadAttention{Config}` and `attention::StreamingMultiQueryAttention{Config}`
   - `n_heads` and `num_key_value_heads` allow GQA head sharing.
   - Rolling KV cache, sink token preservation, and sliding `AttnWindow`.
   - Optional sinks column via `StreamingMqaParams { sinks: Option<&Tensor<_,2>> }`.
   - Optional additive attention bias via `attn_bias: Option<&Tensor<_,4>>` (for ALiBi or custom shaping).
-- Non‑streaming MQA: `attention::MultiQueryAttention{Config}` for training/eval without cache.
-- RoPE NTK/YaRN: `rope::init_ntk_yarn(...)` convenience over Burn’s frequency‑scaling hooks.
-- Generation tools: `sampling` (temperature/top‑k/penalties) and `generate` harness for chunked decoding.
-- Cache/window policies: `cache::{MqaCacheManager, WindowPolicy}` to manage per‑layer caches and windows.
+- Non-streaming MQA: `attention::MultiQueryAttention{Config}` for training/eval without cache.
+- RoPE NTK/YaRN: `rope::init_ntk_yarn(...)` convenience over Burn's frequency-scaling hooks.
+- Mask helpers: `attention::mask1d::{lengths_to_mask, generate_causal_mask_1d, generate_windowed_causal_mask, generate_chunked_causal_mask_1d}` so curriculum or packed batches stay ergonomic.
+- Linear attention: `attention::LinearAttention` provides a drop-in long-sequence alternative when latency or memory dominate.
+- Generation tools: `sampling` (temperature/top-k/penalties) and `generate` harness for chunked decoding.
+- Cache/window policies: `cache::{MqaCacheManager, WindowPolicy}` to manage per-layer caches and windows.
 
 Shapes and head grouping
 - Let `d_model`, `n_heads`, `kv_heads`, and `head_dim = d_model / n_heads`.

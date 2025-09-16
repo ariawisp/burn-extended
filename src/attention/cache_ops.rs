@@ -5,7 +5,7 @@ use burn::tensor::backend::Backend;
 /// Evict and roll the streaming MHA cache window left by `num_evicted` tokens on dim=1.
 /// Preserves the first `sink_tokens` entries.
 pub fn evict_and_roll_mha<B: Backend>(
-    cache: &mut burn::nn::attention::StreamingMhaCache<B>,
+    cache: &mut super::StreamingMhaCache<B>,
     batch_size: usize,
     n_heads: usize,
     d_k: usize,
@@ -87,4 +87,3 @@ pub fn evict_and_roll_mqa<B: Backend>(
 
     cache.local_end_index = cache.local_end_index.saturating_sub(num_evicted);
 }
-

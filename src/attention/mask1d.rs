@@ -21,6 +21,38 @@ pub fn generate_causal_mask_1d<B: Backend>(seq_len: usize, device: &B::Device) -
     Tensor::<B, 2, Bool>::tril_mask([seq_len, seq_len], 0, device)
 }
 
+/// Generate a windowed causal mask with optional sink tokens.
+/// Returns a `[batch, seq_len, seq_len]` tensor matching `AttnWindow` behaviour.
+pub fn generate_windowed_causal_mask<B: Backend>(
+    batch_size: usize,
+    seq_length: usize,
+    window_len: Option<usize>,
+    sink_tokens: usize,
+    device: &B::Device,
+) -> Tensor<B, 3, Bool> {
+    let base = Tensor::<B, 2, Bool>::tril_mask([seq_length, seq_length], 0, device);
+
+    if let Some(w) = window_len {
+        let mut mask = base;
+        for i in 0..seq_length {
+            let start = if i < sink_tokens {
+                0
+            } else {
+                let window_start = i.saturating_sub(w);
+                window_start.max(sink_tokens)
+            };
+
+            if start > 0 {
+                let fill = Tensor::<B, 2, Bool>::full([1, start], true, device);
+                mask = mask.slice_assign([i..i + 1, 0..start], fill);
+            }
+        }
+        mask.reshape([1, seq_length, seq_length]).repeat_dim(0, batch_size)
+    } else {
+        base.reshape([1, seq_length, seq_length]).repeat_dim(0, batch_size)
+    }
+}
+
 /// Generate a chunked causal mask [L, L] with Conformer-style left chunks.
 pub fn generate_chunked_causal_mask_1d<B: Backend>(seq_len: usize, chunk_size: usize, num_left_chunks: isize, device: &B::Device) -> Tensor<B, 2, Bool> {
     let mut mask = Tensor::<B, 2, Bool>::full([seq_len, seq_len], true, device);
@@ -37,4 +69,3 @@ pub fn generate_chunked_causal_mask_1d<B: Backend>(seq_len: usize, chunk_size: u
     }
     mask
 }
-

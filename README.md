@@ -1,43 +1,53 @@
 # burn-extended
 
-High‑level, reusable building blocks for fast, long‑context inference on top of Burn.
+Reusable building blocks that sit above `burn-core` so long-context transformers, video stacks, and diffusion pipelines can share the same primitives before they land upstream. The crate keeps implementations backend-agnostic and mirrors the APIs proposed in our Burn PRs.
 
-This package is model‑agnostic and focuses on the most demanded primitives for modern transformer‑style models: attention variants (streaming MQA/MHA), RoPE helpers, sampling/generation utilities, multi‑layer cache management, and attention bias helpers. It complements Burn core and can be maintained as a separate repository.
+## Capabilities
 
-What this repo provides
-- Attention primitives
-  - Streaming Multi‑Query/Grouped‑Query Attention (MQA/GQA) with sinks bias, sliding window, and additive logits bias
-  - Non‑streaming MQA with masks + additive logits bias
-  - Extended Streaming MHA with additive logits bias (drop‑in when MQA isn’t required)
-- RoPE helpers
-  - NTK/YaRN scaling + concentration wrapper over Burn’s Rotary frequency‑scaling
-- Sampling and generation
-  - Logits processors (temperature, top‑k, repetition/frequency/presence penalties)
-  - Greedy/multinomial samplers and a minimal generation harness for chunked decoding
-- Caches and windows
-  - Multi‑layer cache managers (MHA/MQA) and per‑layer window policies (e.g., full vs. sliding by layer)
-- Attention bias utilities
-  - Sinks helpers and ALiBi bias generator (additive, window‑shaped)
+- Attention
+  - Streaming multi-head attention with rolling K/V cache, sink token preservation, and `AttnWindow` control (`attention::StreamingMultiHeadAttention`).
+  - Streaming MQA/GQA with optional additive bias and sinks helpers (`attention::StreamingMultiQueryAttention`).
+  - Linear attention (kernelized positive feature maps) with padding mask support (`attention::LinearAttention`).
+  - 1D mask helpers for padding, causal, windowed, and chunked scenarios (`attention::mask1d`).
+- Positional encoding
+  - NTK/YaRN rotary scaling for 1D RoPE (`rope::init_ntk_yarn`).
+  - 3D rotary encoding over (frames, height, width) with streaming offsets (`rope::Rope3dEncoding`).
+- Tokenization helpers
+  - Conv2d/ConvTranspose2d patch embedding for images (`image::ImagePatchEmbedding`, `ImageUnpatchify`).
+  - Conv3d/ConvTranspose3d patch embedding for video grids (`video::VideoPatchEmbedding`, `VideoUnpatchify`).
+- Diffusion / flow-matching utilities
+  - `DiffusionScheduler` trait plus Euler, Heun, and PingPong schedulers.
+  - `retrieve_timesteps` resampling utility compatible with diffusers-style schedules.
+  - Guidance helpers: CFG (single/double), APG with momentum, and zero-star projection (`diffusion::guidance`).
+- Generation + caches
+  - Streaming cache managers for MHA/MQA layers, window policies, samplers, and the autoregressive runner in `generate`.
 
-Model coverage (current targets)
+Each module keeps comments close to the code so upstreaming stays mechanical. When Burn absorbs a feature you can flip consumers over to the upstream module and drop the shim here.
 
-| Model | Key requirements | Provided by burn‑extended | Still model‑specific |
-|---|---|---|---|
-| [GPT‑OSS](https://github.com/openai/gpt-oss) | <ul><li>GQA/MQA</li><li>Learned sinks bias</li><li>Sliding window (alternate layers)</li><li>NTK/YaRN RoPE</li></ul> | <ul><li>Streaming MQA with sinks + window</li><li>NTK/YaRN RoPE helper</li><li>Cache/window tools</li><li>Generation + samplers</li></ul> | <ul><li>Decoder block wiring (RMSNorm, residuals, SwiGLU clamp)</li><li>Per‑layer sinks params</li><li>Weight loader</li></ul> |
-| [ACE‑Step](https://github.com/ace-step/ACE-Step) | <ul><li>Streaming MHA with learned attention bias</li><li>Sliding window</li><li>RoPE</li><li>Generation</li></ul> | <ul><li>Extended Streaming MHA with additive <code>attn_bias</code></li><li>Bias utilities</li><li>Cache/window tools</li><li>Generation harness</li></ul> | <ul><li>Exact block + bias policy function</li><li>Weights and task heads</li></ul> |
-| [Matrix‑Game‑2](https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-2) | <ul><li>Streaming MHA with sink tokens</li><li>Simple interaction loop</li></ul> | <ul><li>Streaming cache with sink preservation</li><li>Window policy helpers</li><li>Generation utilities</li></ul> | <ul><li>Minimal head</li><li>Environment glue (state↔tokens↔actions)</li></ul> |
+## Model Notes
 
-Roadmap
-- Add optional SwiGLU‑with‑clamp utility
-- Provide ready‑to‑use GPT‑OSS decoder block and a minimal weight loader
-- Add a concrete bias‑policy example for ACE‑Step
-- Expose simple CLIs for examples (window/chunk sizes, sinks on/off, sampler config)
+The `docs/` folder captures how these pieces map onto reference projects:
 
-Notes
-- Targets the WGPU backend for inference and examples. Use Metal (MSL) on macOS via `init_setup::<graphics::Metal>()`.
-- Uses `burn-store` + `safetensors` for model loading. Dependencies point to the [antimora/burn (commit 7235cf2)](https://github.com/antimora/burn/commit/7235cf2f5cd501d2abc578865a592e6fb59d1772) fork which introduces `burn-store`.
+- [GPT-OSS](docs/gpt-oss.md) — streaming GQA/MQA, sinks bias, NTK/YaRN, mask helpers, linear attention.
+- [ACE-Step](docs/ace-step.md) — streaming MHA with additive bias, diffusion schedulers, guidance utilities.
+- [Matrix-Game-2](docs/matrix-game-2.md) — streaming attention with sink tokens, video patching, 3D RoPE.
 
-Entrypoints (per model)
-- GPT‑OSS: `cargo run -p burn-extended --example gpt_oss`
-- ACE‑Step: `cargo run -p burn-extended --example ace_step`
-- Matrix‑Game‑2: `cargo run -p burn-extended --example matrix_game_2`
+Those notes stay model-specific so this README can highlight the primitives at a glance.
+
+## Roadmap
+
+- Add SwiGLU-with-clamp helper and merge it into GPT-OSS blocks.
+- Expose ready-to-wire decoder blocks for GPT-OSS and ACE-Step once upstream APIs stabilize.
+- Provide toy diffusion examples that exercise the schedulers and guidance helpers.
+
+## Usage
+
+`burn-extended` targets inference on WGPU backends (Metal on macOS). Example entrypoints:
+
+```bash
+cargo run -p burn-extended --example gpt_oss
+cargo run -p burn-extended --example ace_step
+cargo run -p burn-extended --example matrix_game_2
+```
+
+Loader utilities expect checkpoints in `burn-store`/`safetensors` format and align with the split helpers documented in the model notes.
