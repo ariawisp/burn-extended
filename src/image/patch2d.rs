@@ -3,7 +3,7 @@ use burn_core as burn;
 use burn::config::Config;
 use burn::module::Module;
 use burn::nn::conv::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig};
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 #[derive(Config, Debug)]
 pub struct ImagePatchEmbeddingConfig {
@@ -30,7 +30,11 @@ impl ImagePatchEmbeddingConfig {
             .with_stride(stride)
             .with_bias(self.bias)
             .init(device);
-        ImagePatchEmbedding { conv, patch: self.patch_size, stride }
+        ImagePatchEmbedding {
+            conv,
+            patch: self.patch_size,
+            stride,
+        }
     }
 }
 
@@ -48,7 +52,9 @@ impl<B: Backend> ImagePatchEmbedding<B> {
         let [_, d, hp, wp] = y.dims();
         y.reshape([b, d, hp * wp]).swap_dims(1, 2)
     }
-    pub fn forward_4d(&self, x: Tensor<B, 4>) -> Tensor<B, 4> { self.conv.forward(x) }
+    pub fn forward_4d(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+        self.conv.forward(x)
+    }
 }
 
 #[derive(Config, Debug)]
@@ -62,7 +68,10 @@ pub struct ImageUnpatchifyConfig {
 }
 
 #[derive(Module, Debug)]
-pub struct ImageUnpatchify<B: Backend> { deconv: ConvTranspose2d<B>, stride: [usize; 2] }
+pub struct ImageUnpatchify<B: Backend> {
+    deconv: ConvTranspose2d<B>,
+    stride: [usize; 2],
+}
 
 impl ImageUnpatchifyConfig {
     pub fn init<B: Backend>(&self, embed_dim: usize, device: &B::Device) -> ImageUnpatchify<B> {
@@ -83,6 +92,7 @@ impl<B: Backend> ImageUnpatchify<B> {
         let x = tokens.swap_dims(1, 2).reshape([b, d, hp, wp]);
         self.deconv.forward(x)
     }
-    pub fn forward_4d(&self, x: Tensor<B, 4>) -> Tensor<B, 4> { self.deconv.forward(x) }
+    pub fn forward_4d(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+        self.deconv.forward(x)
+    }
 }
-

@@ -1,19 +1,15 @@
-use burn_core as burn;
-use burn::backend::Backend;
-use burn_extended::diffusion::{
-    FlowMatchEuler, FlowMatchEulerConfig,
-    FlowMatchHeun, FlowMatchHeunConfig,
-    FlowMatchPingPong, FlowMatchPingPongConfig,
-    DiffusionScheduler,
-    retrieve_timesteps,
-};
+use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Tensor};
+use burn_extended::diffusion::{
+    retrieve_timesteps, DiffusionScheduler, FlowMatchEuler, FlowMatchEulerConfig, FlowMatchHeun,
+    FlowMatchHeunConfig, FlowMatchPingPong, FlowMatchPingPongConfig,
+};
 use burn_ndarray::NdArray;
-use burn_tensor::Tolerance;
+use burn_tensor::{ops::FloatElem, Tolerance};
 
 type TB = NdArray<f32>;
 
-fn device() -> <TB as burn::backend::Backend>::Device {
+fn device() -> <TB as Backend>::Device {
     Default::default()
 }
 
@@ -25,7 +21,8 @@ fn euler_zero_model_output_is_identity() {
     let sample = Tensor::<TB, 3>::random([1, 2, 3], Distribution::Default, &device);
     let model_output = Tensor::<TB, 3>::zeros([1, 2, 3], &device);
     let out = sched.step(model_output, 0.0, sample.clone(), 1.0);
-    out.into_data().assert_approx_eq(&sample.into_data(), Tolerance::default());
+    out.into_data()
+        .assert_approx_eq::<FloatElem<TB>>(&sample.into_data(), Tolerance::default());
 }
 
 #[test]

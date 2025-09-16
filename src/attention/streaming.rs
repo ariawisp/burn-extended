@@ -4,7 +4,7 @@ use burn::module::{Content, DisplaySettings, Module, ModuleDisplay};
 use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig};
 use burn::{
     config::Config,
-    tensor::{Tensor, backend::Backend},
+    tensor::{backend::Backend, Tensor},
 };
 
 use burn_tensor::activation::{quiet_softmax, softmax};
@@ -215,45 +215,31 @@ pub(crate) fn update_cache_window<B: Backend>(
 
     if need > cap {
         let num_evicted = need - cap;
-        let num_rolled = cache
-            .local_end_index
-            .saturating_sub(num_evicted + sink);
+        let num_rolled = cache.local_end_index.saturating_sub(num_evicted + sink);
         if num_rolled > 0 {
             let src_start = sink + num_evicted;
             let src_end = sink + num_evicted + num_rolled;
 
-            let rolled_k = cache.k.clone().slice([
-                0..batch_size,
-                src_start..src_end,
-                0..n_heads,
-                0..d_k,
-            ]);
+            let rolled_k =
+                cache
+                    .k
+                    .clone()
+                    .slice([0..batch_size, src_start..src_end, 0..n_heads, 0..d_k]);
             cache.k.inplace(|t| {
                 t.slice_assign(
-                    [
-                        0..batch_size,
-                        sink..sink + num_rolled,
-                        0..n_heads,
-                        0..d_k,
-                    ],
+                    [0..batch_size, sink..sink + num_rolled, 0..n_heads, 0..d_k],
                     rolled_k,
                 )
             });
 
-            let rolled_v = cache.v.clone().slice([
-                0..batch_size,
-                src_start..src_end,
-                0..n_heads,
-                0..d_k,
-            ]);
+            let rolled_v =
+                cache
+                    .v
+                    .clone()
+                    .slice([0..batch_size, src_start..src_end, 0..n_heads, 0..d_k]);
             cache.v.inplace(|t| {
                 t.slice_assign(
-                    [
-                        0..batch_size,
-                        sink..sink + num_rolled,
-                        0..n_heads,
-                        0..d_k,
-                    ],
+                    [0..batch_size, sink..sink + num_rolled, 0..n_heads, 0..d_k],
                     rolled_v,
                 )
             });
@@ -271,23 +257,13 @@ pub(crate) fn update_cache_window<B: Backend>(
 
     cache.k.inplace(|t| {
         t.slice_assign(
-            [
-                0..batch_size,
-                local_start..local_end,
-                0..n_heads,
-                0..d_k,
-            ],
+            [0..batch_size, local_start..local_end, 0..n_heads, 0..d_k],
             k_rs,
         )
     });
     cache.v.inplace(|t| {
         t.slice_assign(
-            [
-                0..batch_size,
-                local_start..local_end,
-                0..n_heads,
-                0..d_k,
-            ],
+            [0..batch_size, local_start..local_end, 0..n_heads, 0..d_k],
             v_rs,
         )
     });
@@ -308,22 +284,12 @@ pub(crate) fn update_cache_window<B: Backend>(
     let k_win = cache
         .k
         .clone()
-        .slice([
-            0..batch_size,
-            start..local_end,
-            0..n_heads,
-            0..d_k,
-        ])
+        .slice([0..batch_size, start..local_end, 0..n_heads, 0..d_k])
         .swap_dims(1, 2);
     let v_win = cache
         .v
         .clone()
-        .slice([
-            0..batch_size,
-            start..local_end,
-            0..n_heads,
-            0..d_k,
-        ])
+        .slice([0..batch_size, start..local_end, 0..n_heads, 0..d_k])
         .swap_dims(1, 2);
 
     CacheView {
@@ -354,10 +320,7 @@ impl<B: Backend> StreamingMultiHeadAttention<B> {
 
         // Optionally apply RoPE using the provided absolute offset.
         let (q, k) = if let Some(rope) = params.rope {
-            debug_assert!(
-                self.d_k % 2 == 0,
-                "RotaryEncoding requires even head_dim",
-            );
+            debug_assert!(self.d_k % 2 == 0, "RotaryEncoding requires even head_dim",);
             let q_rs = q.swap_dims(1, 2);
             let k_rs = k.swap_dims(1, 2);
             let q_ro = rope.apply(q_rs, params.start_pos);
@@ -383,10 +346,11 @@ impl<B: Backend> StreamingMultiHeadAttention<B> {
             softmax(attn_scores, 3)
         };
 
-        let context = weights
-            .matmul(v_win)
-            .swap_dims(1, 2)
-            .reshape([batch_size, seq_len, self.d_model]);
+        let context =
+            weights
+                .matmul(v_win)
+                .swap_dims(1, 2)
+                .reshape([batch_size, seq_len, self.d_model]);
         self.output.forward(context)
     }
 

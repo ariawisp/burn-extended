@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 /// Returns `(timesteps, num_inference_steps)` as a 1D tensor on the given device.
 pub fn retrieve_timesteps<B: Backend>(
@@ -18,8 +18,7 @@ pub fn retrieve_timesteps<B: Backend>(
         let last = sigmas.len() - 1;
         (0..num_inference_steps)
             .map(|i| {
-                let idx = (i as f32) * (last as f32)
-                    / ((num_inference_steps - 1).max(1) as f32);
+                let idx = (i as f32) * (last as f32) / ((num_inference_steps - 1).max(1) as f32);
                 let low = idx.floor() as usize;
                 let high = idx.ceil() as usize;
                 if low == high {
@@ -36,11 +35,13 @@ pub fn retrieve_timesteps<B: Backend>(
         .iter()
         .map(|s| s * num_train_timesteps as f32)
         .collect();
-    (Tensor::from_floats(timesteps_vals.as_slice(), device), used_sigmas.len())
+    (
+        Tensor::from_floats(timesteps_vals.as_slice(), device),
+        used_sigmas.len(),
+    )
 }
 
 /// Logistic rescale helper used by some flow-matching variants.
 pub(crate) fn logistic_rescale(x: f32, l: f32, u: f32, x0: f32, k: f32) -> f32 {
     l + (u - l) / (1.0 + (-k * (x - x0)).exp())
 }
-

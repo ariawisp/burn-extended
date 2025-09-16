@@ -6,15 +6,15 @@ extern crate alloc;
 #[allow(unused_imports)]
 use burn_core as burn;
 
-pub mod attention;
 pub mod activation;
+pub mod attention;
+pub mod bias;
+pub mod cache;
+pub mod decoder;
+pub mod diffusion;
+pub mod generate;
+pub mod image;
+pub mod loader;
 pub mod rope;
 pub mod sampling;
-pub mod generate;
-pub mod cache;
-pub mod bias;
-pub mod loader;
-pub mod image;
 pub mod video;
-pub mod diffusion;
-pub mod decoder;

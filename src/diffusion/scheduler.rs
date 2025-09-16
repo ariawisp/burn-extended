@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 /// Trait implemented by diffusion schedulers used during inference.
 pub trait DiffusionScheduler<B: Backend, const D: usize> {

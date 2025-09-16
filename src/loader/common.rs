@@ -1,7 +1,9 @@
 use burn_store::safetensors::SafetensorsError;
 use burn_tensor::DType;
 
-pub(crate) fn burn_dtype_from_safetensors(dtype: safetensors::Dtype) -> Result<DType, SafetensorsError> {
+pub(crate) fn burn_dtype_from_safetensors(
+    dtype: safetensors::Dtype,
+) -> Result<DType, SafetensorsError> {
     use safetensors::Dtype as ST;
     Ok(match dtype {
         ST::F64 => DType::F64,
@@ -16,7 +18,12 @@ pub(crate) fn burn_dtype_from_safetensors(dtype: safetensors::Dtype) -> Result<D
         ST::U32 => DType::U32,
         ST::U8 => DType::U8,
         ST::BOOL => DType::Bool,
-        _ => return Err(SafetensorsError::Other(format!("Unsupported dtype: {:?}", dtype))),
+        _ => {
+            return Err(SafetensorsError::Other(format!(
+                "Unsupported dtype: {:?}",
+                dtype
+            )))
+        }
     })
 }
 
@@ -28,4 +35,3 @@ pub(crate) fn elem_size(dtype: DType) -> usize {
         DType::I8 | DType::U8 | DType::Bool | DType::QFloat(_) => 1,
     }
 }
-

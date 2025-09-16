@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 /// Classifier-free guidance: `uncond + s * (cond - uncond)`.
 pub fn cfg<B: Backend, const D: usize>(
@@ -19,8 +19,7 @@ pub fn cfg_double<B: Backend, const D: usize>(
     guidance_scale_text: f32,
     guidance_scale_lyric: f32,
 ) -> Tensor<B, D> {
-    uncond
-        .mul_scalar(1.0 - guidance_scale_text)
+    uncond.mul_scalar(1.0 - guidance_scale_text)
         + only_text.mul_scalar(guidance_scale_text - guidance_scale_lyric)
         + cond.mul_scalar(guidance_scale_lyric)
 }
@@ -91,4 +90,3 @@ pub fn cfg_zero_star<B: Backend, const D: usize>(
     let base = uncond.mul_scalar(alpha.into_scalar());
     base.clone() + (cond - base).mul_scalar(guidance_scale)
 }
-

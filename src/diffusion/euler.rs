@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 use super::scheduler::{tensor_from_vec, DiffusionScheduler};
 use super::utils::logistic_rescale;
@@ -128,4 +128,3 @@ impl<B: Backend, const D: usize> DiffusionScheduler<B, D> for FlowMatchEuler<B, 
         noise.mul_scalar(sigma).add(sample.mul_scalar(1.0 - sigma))
     }
 }
-

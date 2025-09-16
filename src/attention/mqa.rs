@@ -4,7 +4,7 @@ use burn::module::{Content, DisplaySettings, Module, ModuleDisplay};
 use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig};
 use burn::{
     config::Config,
-    tensor::{Bool, Tensor, backend::Backend},
+    tensor::{backend::Backend, Bool, Tensor},
 };
 
 use burn_tensor::activation::{quiet_softmax, softmax};
@@ -114,7 +114,7 @@ pub struct MqaInput<B: Backend> {
     pub mask_pad: Option<Tensor<B, 2, Bool>>,
     pub mask_attn: Option<Tensor<B, 3, Bool>>,
     /// Optional additive bias on attention logits, shape `[B, n_heads, q_len, k_len]`.
-    pub attn_bias: Option<Tensor<B, 4>>, 
+    pub attn_bias: Option<Tensor<B, 4>>,
 }
 
 impl<B: Backend> MqaInput<B> {
@@ -129,11 +129,27 @@ impl<B: Backend> MqaInput<B> {
         }
     }
     pub fn new(query: Tensor<B, 3>, key: Tensor<B, 3>, value: Tensor<B, 3>) -> Self {
-        Self { query, key, value, mask_pad: None, mask_attn: None, attn_bias: None }
+        Self {
+            query,
+            key,
+            value,
+            mask_pad: None,
+            mask_attn: None,
+            attn_bias: None,
+        }
     }
-    pub fn mask_pad(mut self, mask_pad: Tensor<B, 2, Bool>) -> Self { self.mask_pad = Some(mask_pad); self }
-    pub fn mask_attn(mut self, mask_attn: Tensor<B, 3, Bool>) -> Self { self.mask_attn = Some(mask_attn); self }
-    pub fn attn_bias(mut self, attn_bias: Tensor<B, 4>) -> Self { self.attn_bias = Some(attn_bias); self }
+    pub fn mask_pad(mut self, mask_pad: Tensor<B, 2, Bool>) -> Self {
+        self.mask_pad = Some(mask_pad);
+        self
+    }
+    pub fn mask_attn(mut self, mask_attn: Tensor<B, 3, Bool>) -> Self {
+        self.mask_attn = Some(mask_attn);
+        self
+    }
+    pub fn attn_bias(mut self, attn_bias: Tensor<B, 4>) -> Self {
+        self.attn_bias = Some(attn_bias);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -159,10 +175,12 @@ impl<B: Backend> MultiQueryAttention<B> {
             .unsqueeze_dim::<5>(2) // [B, kvH, 1, Tk, d_k]
             .repeat_dim(2, groups)
             .reshape([batch_size, self.n_heads, seq_k, self.d_k]);
-        let v_exp = v
-            .unsqueeze_dim::<5>(2)
-            .repeat_dim(2, groups)
-            .reshape([batch_size, self.n_heads, seq_k, self.d_k]);
+        let v_exp = v.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([
+            batch_size,
+            self.n_heads,
+            seq_k,
+            self.d_k,
+        ]);
 
         // Compute attention scores
         let mut attn_scores = q
@@ -191,7 +209,9 @@ impl<B: Backend> MultiQueryAttention<B> {
             softmax(attn_scores, 3)
         };
 
-        let context = weights.clone().matmul(v_exp)
+        let context = weights
+            .clone()
+            .matmul(v_exp)
             .swap_dims(1, 2)
             .reshape([batch_size, seq_q, d_model]);
         let context = self.output.forward(context);
@@ -214,4 +234,3 @@ impl<B: Backend> MultiQueryAttention<B> {
             .swap_dims(1, 2)
     }
 }
-

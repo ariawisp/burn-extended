@@ -1,7 +1,7 @@
 use burn_core as burn;
 
-use burn::tensor::backend::Backend;
 use crate::attention::{AttnWindow, StreamingMqaParams, StreamingParams};
+use burn::tensor::backend::Backend;
 
 /// Minimal streaming state for chunked decoding.
 #[derive(Clone, Debug)]
@@ -11,9 +11,19 @@ pub struct StreamState {
 }
 
 impl StreamState {
-    pub fn new(window: AttnWindow) -> Self { Self { start_pos: 0, window } }
-    pub fn begin_chunk(&self) -> Self { self.clone() }
-    pub fn advance(mut self, by: usize) -> Self { self.start_pos += by; self }
+    pub fn new(window: AttnWindow) -> Self {
+        Self {
+            start_pos: 0,
+            window,
+        }
+    }
+    pub fn begin_chunk(&self) -> Self {
+        self.clone()
+    }
+    pub fn advance(mut self, by: usize) -> Self {
+        self.start_pos += by;
+        self
+    }
 }
 
 impl StreamState {
@@ -21,7 +31,11 @@ impl StreamState {
         &'a self,
         rope: Option<&'a burn::nn::RotaryEncoding<B>>,
     ) -> StreamingParams<'a, B> {
-        StreamingParams { rope, start_pos: self.start_pos, window: self.window }
+        StreamingParams {
+            rope,
+            start_pos: self.start_pos,
+            window: self.window,
+        }
     }
 
     pub fn params_mqa<'a, B: Backend>(
@@ -29,7 +43,12 @@ impl StreamState {
         rope: Option<&'a burn::nn::RotaryEncoding<B>>,
         sinks: Option<&'a burn::tensor::Tensor<B, 2>>,
     ) -> StreamingMqaParams<'a, B> {
-        StreamingMqaParams { rope, start_pos: self.start_pos, window: self.window, sinks, attn_bias: None }
+        StreamingMqaParams {
+            rope,
+            start_pos: self.start_pos,
+            window: self.window,
+            sinks,
+            attn_bias: None,
+        }
     }
 }
-

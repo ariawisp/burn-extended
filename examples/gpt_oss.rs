@@ -50,4 +50,3 @@ fn main() {
     let y = Tensor::cat(outputs, 1);
     println!("gpt-oss example output shape: {:?}", y.dims());
 }
-

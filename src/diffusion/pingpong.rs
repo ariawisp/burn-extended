@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::tensor::{Distribution, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Distribution, Tensor};
 
 use super::scheduler::{tensor_from_vec, DiffusionScheduler};
 

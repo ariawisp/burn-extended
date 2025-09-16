@@ -4,7 +4,7 @@ use burn::module::{Content, DisplaySettings, Module, ModuleDisplay};
 use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig};
 use burn::{
     config::Config,
-    tensor::{Tensor, backend::Backend},
+    tensor::{backend::Backend, Tensor},
 };
 
 use super::AttnWindow;
@@ -260,7 +260,7 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
                 sink,
                 num_evicted,
             );
-            cache.local_end_index = cache.local_end_index + delta;
+            cache.local_end_index += delta;
         } else {
             cache.local_end_index += delta;
         }
@@ -334,10 +334,12 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             .unsqueeze_dim::<5>(2) // [B, kvH, 1, Tk, d_k]
             .repeat_dim(2, groups) // [B, kvH, groups, Tk, d_k]
             .reshape([batch_size, self.n_heads, active_len, self.d_k]);
-        let v_exp = v_win
-            .unsqueeze_dim::<5>(2)
-            .repeat_dim(2, groups)
-            .reshape([batch_size, self.n_heads, active_len, self.d_k]);
+        let v_exp = v_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([
+            batch_size,
+            self.n_heads,
+            active_len,
+            self.d_k,
+        ]);
 
         // Attention
         let mut attn_scores = crate::attention::compute_scores(q, k_exp, self.d_k, &self.dropout);

@@ -3,10 +3,10 @@ use burn_core as burn;
 use burn::config::Config;
 use burn::module::Module;
 use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig, RmsNorm, RmsNormConfig};
-use burn::tensor::{Bool, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Bool, Tensor};
 
 use crate::activation::swiglu_clamp;
-use crate::attention::{MultiQueryAttention, MultiQueryAttentionConfig, MqaInput};
+use crate::attention::{MqaInput, MultiQueryAttention, MultiQueryAttentionConfig};
 
 /// Configuration for a baseline decoder block using multi-query attention and SwiGLU FFN.
 #[derive(Config, Debug)]
@@ -21,7 +21,9 @@ pub struct DecoderBlockConfig {
     pub swiglu_alpha: f32,
     #[config(default = 7.0)]
     pub swiglu_limit: f32,
-    #[config(default = "Initializer::KaimingUniform{gain:1.0/num_traits::Float::sqrt(3.0), fan_out_only:false}")]
+    #[config(
+        default = "Initializer::KaimingUniform{gain:1.0/num_traits::Float::sqrt(3.0), fan_out_only:false}"
+    )]
     pub initializer: Initializer,
 }
 
@@ -39,17 +41,20 @@ pub struct DecoderBlock<B: Backend> {
 
 impl DecoderBlockConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> DecoderBlock<B> {
-        assert!(self.d_model % self.n_heads == 0, "d_model must divide n_heads");
-        assert!(self.n_heads % self.num_key_value_heads == 0, "n_heads must divide kv_heads");
+        assert!(
+            self.d_model % self.n_heads == 0,
+            "d_model must divide n_heads"
+        );
+        assert!(
+            self.n_heads % self.num_key_value_heads == 0,
+            "n_heads must divide kv_heads"
+        );
 
-        let attn = MultiQueryAttentionConfig::new(
-            self.d_model,
-            self.n_heads,
-            self.num_key_value_heads,
-        )
-        .with_dropout(self.dropout)
-        .with_initializer(self.initializer.clone())
-        .init::<B>(device);
+        let attn =
+            MultiQueryAttentionConfig::new(self.d_model, self.n_heads, self.num_key_value_heads)
+                .with_dropout(self.dropout)
+                .with_initializer(self.initializer.clone())
+                .init::<B>(device);
 
         let norm_attn = RmsNormConfig::new(self.d_model).init::<B>(device);
         let norm_ffn = RmsNormConfig::new(self.d_model).init::<B>(device);

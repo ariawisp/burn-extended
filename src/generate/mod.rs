@@ -2,7 +2,7 @@ use burn_core as burn;
 extern crate alloc;
 
 use alloc::vec::Vec;
-use burn::tensor::{Int, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Int, Tensor};
 use burn_tensor::TensorData;
 
 use crate::attention::AttnWindow;
@@ -36,7 +36,13 @@ impl Default for GenerationConfig {
         Self {
             max_new_tokens: 128,
             eos_token: None,
-            sampler: SamplerConfig { temperature: 1.0, top_k: Some(50), repetition_penalty: None, frequency_penalty: None, presence_penalty: None },
+            sampler: SamplerConfig {
+                temperature: 1.0,
+                top_k: Some(50),
+                repetition_penalty: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+            },
             window: AttnWindow::Full,
         }
     }
@@ -58,18 +64,24 @@ pub fn generate<B: Backend, M: AutoregressiveModel<B>>(
         // Build tokens tensor [B, T]
         let max_t = tokens.iter().map(|t| t.len()).max().unwrap_or(0);
         let mut flat: Vec<i64> = Vec::with_capacity(b * max_t);
-        for row in 0..b {
-            let row_t = &tokens[row];
-            for &tok in row_t.iter() { flat.push(tok as i64); }
-            for _ in row_t.len()..max_t { flat.push(0); } // pad with 0; model should ignore via pad mask
+        for row_t in tokens.iter().take(b) {
+            flat.extend(row_t.iter().map(|&tok| tok as i64));
+            let pad = max_t.saturating_sub(row_t.len());
+            flat.extend(std::iter::repeat(0i64).take(pad)); // pad with 0; model should ignore via pad mask
         }
         let input = Tensor::<B, 2, Int>::from_ints(TensorData::new(flat, [b, max_t]), device);
 
-        let logits = model.forward_logits(input, &mut cache, start_pos.saturating_sub(1), cfg.window);
+        let logits =
+            model.forward_logits(input, &mut cache, start_pos.saturating_sub(1), cfg.window);
 
         // CPU-side history for penalties
         let history: Vec<Vec<usize>> = tokens.clone();
-        let next = process_and_sample::<B>(logits, Some(&history), cfg.sampler, /*greedy_when_temp_zero*/ true);
+        let next = process_and_sample::<B>(
+            logits,
+            Some(&history),
+            cfg.sampler,
+            /*greedy_when_temp_zero*/ true,
+        );
         let next_data = next
             .into_data()
             .convert::<i64>()
@@ -82,13 +94,17 @@ pub fn generate<B: Backend, M: AutoregressiveModel<B>>(
             let tok = next_data[i] as usize;
             tokens[i].push(tok);
             if let Some(eos) = cfg.eos_token {
-                if tok != eos { all_eos = false; }
+                if tok != eos {
+                    all_eos = false;
+                }
             } else {
                 all_eos = false;
             }
         }
         start_pos += 1;
-        if all_eos { break; }
+        if all_eos {
+            break;
+        }
     }
     tokens
 }

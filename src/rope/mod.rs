@@ -1,8 +1,8 @@
 use burn_core as burn;
 
 use burn::nn::{RotaryEncoding, RotaryEncodingConfig};
-use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
+use burn::tensor::Tensor;
 
 /// Initialize RoPE with NTK/YaRN-style scaling and concentration without modifying burn-core.
 ///
@@ -33,10 +33,7 @@ pub fn init_ntk_yarn<B: Backend>(
 
     let scaling = move |inv_freq: Tensor<B, 1>| {
         // inv_freq = base^(-2i/d_model)  =>  i = -(d_model/2) * ln(inv_freq)/ln(base)
-        let i = inv_freq
-            .clone()
-            .log()
-            .mul_scalar(-d_model / 2.0 / log_base);
+        let i = inv_freq.clone().log().mul_scalar(-d_model / 2.0 / log_base);
 
         let ramp = i
             .clone()

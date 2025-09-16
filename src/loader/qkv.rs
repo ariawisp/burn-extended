@@ -1,9 +1,11 @@
 use burn_core as burn;
 
 use burn::module::Module;
-use burn_store::{ApplyResult, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapshot};
 use burn_store::safetensors::SafetensorsError;
-use burn_tensor::{DType, TensorData, backend::Backend};
+use burn_store::{
+    ApplyResult, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, TensorSnapshot,
+};
+use burn_tensor::{backend::Backend, DType, TensorData};
 
 use std::path::Path;
 
@@ -14,8 +16,16 @@ use super::common::{burn_dtype_from_safetensors, elem_size};
 /// Strategy to split fused QKV along the last dimension.
 #[derive(Clone, Debug)]
 pub enum QkvSplitStrategy {
-    Sizes { q: usize, k: usize, v: usize },
-    Heads { n_heads: usize, kv_heads: usize, head_dim: usize },
+    Sizes {
+        q: usize,
+        k: usize,
+        v: usize,
+    },
+    Heads {
+        n_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    },
 }
 
 /// A single mapping from a fused QKV weight/bias to separate Q, K, V targets.
@@ -32,7 +42,12 @@ pub struct QkvSplitSpec {
     pub strategy: QkvSplitStrategy,
 }
 
-fn split_along_last_dim(bytes: &[u8], shape: &[usize], dtype: DType, sizes: (usize, usize, usize)) -> (TensorData, TensorData, TensorData) {
+fn split_along_last_dim(
+    bytes: &[u8],
+    shape: &[usize],
+    dtype: DType,
+    sizes: (usize, usize, usize),
+) -> (TensorData, TensorData, TensorData) {
     let total_last = shape.last().copied().unwrap_or(0);
     let (q, k, v) = sizes;
     debug_assert_eq!(q + k + v, total_last);
@@ -51,7 +66,9 @@ fn split_along_last_dim(bytes: &[u8], shape: &[usize], dtype: DType, sizes: (usi
         let base = i * stride;
         qb.extend_from_slice(&bytes[base..base + q_stride]);
         kb.extend_from_slice(&bytes[base + q_stride..base + q_stride + k_stride]);
-        vb.extend_from_slice(&bytes[base + q_stride + k_stride..base + q_stride + k_stride + v_stride]);
+        vb.extend_from_slice(
+            &bytes[base + q_stride + k_stride..base + q_stride + k_stride + v_stride],
+        );
     }
 
     let mut q_shape = shape.to_vec();
@@ -74,7 +91,9 @@ fn view_to_snapshot(name: &str, view: &TensorView) -> Result<TensorSnapshot, Saf
     let path_parts: Vec<String> = name.split('.').map(|s| s.to_string()).collect();
     let bytes = view.data().to_vec();
     let shape_for_fn = shape.clone();
-    let data_fn = alloc::rc::Rc::new(move || TensorData::from_bytes(bytes.clone(), shape_for_fn.clone(), dtype));
+    let data_fn = alloc::rc::Rc::new(move || {
+        TensorData::from_bytes(bytes.clone(), shape_for_fn.clone(), dtype)
+    });
     Ok(TensorSnapshot::from_closure(
         data_fn,
         dtype,
@@ -100,57 +119,106 @@ where
 {
     use std::fs;
     let data = fs::read(path).map_err(|err| SafetensorsError::Other(err.to_string()))?;
-    let st = SafeTensors::deserialize(&data)
-        .map_err(|err| SafetensorsError::Other(err.to_string()))?;
+    let st =
+        SafeTensors::deserialize(&data).map_err(|err| SafetensorsError::Other(err.to_string()))?;
 
     use hashbrown::HashSet;
     let mut fused_names: HashSet<&str> = HashSet::new();
     for s in splits {
         fused_names.insert(s.fused_weight.as_str());
-        if let Some(b) = &s.fused_bias { fused_names.insert(b.as_str()); }
+        if let Some(b) = &s.fused_bias {
+            fused_names.insert(b.as_str());
+        }
     }
 
     let mut snapshots: Vec<TensorSnapshot> = Vec::new();
 
     for (name, view) in st.tensors() {
-        if fused_names.contains(name.as_str()) { continue; }
+        if fused_names.contains(name.as_str()) {
+            continue;
+        }
         let snap = view_to_snapshot(&name, &view)?;
         let snap = if from_pytorch {
-            if let Some(adapted) = PyTorchToBurnAdapter.adapt_tensor(&snap) { adapted } else { continue }
-        } else { snap };
+            if let Some(adapted) = PyTorchToBurnAdapter.adapt_tensor(&snap) {
+                adapted
+            } else {
+                continue;
+            }
+        } else {
+            snap
+        };
         snapshots.push(snap);
     }
 
     for spec in splits {
-        let wview = st.tensor(&spec.fused_weight).map_err(|_| SafetensorsError::TensorNotFound(spec.fused_weight.clone()))?;
+        let wview = st
+            .tensor(&spec.fused_weight)
+            .map_err(|_| SafetensorsError::TensorNotFound(spec.fused_weight.clone()))?;
         let dtype = burn_dtype_from_safetensors(wview.dtype())?;
         let shape = wview.shape().to_vec();
         let bytes = wview.data().to_vec();
         let (q_size, k_size, v_size) = match spec.strategy {
             QkvSplitStrategy::Sizes { q, k, v } => (q, k, v),
-            QkvSplitStrategy::Heads { n_heads, kv_heads, head_dim } => (n_heads * head_dim, kv_heads * head_dim, kv_heads * head_dim),
+            QkvSplitStrategy::Heads {
+                n_heads,
+                kv_heads,
+                head_dim,
+            } => (n_heads * head_dim, kv_heads * head_dim, kv_heads * head_dim),
         };
         let (qd, kd, vd) = split_along_last_dim(&bytes, &shape, dtype, (q_size, k_size, v_size));
-        let qw = TensorSnapshot::from_data(qd, spec.q_weight.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new());
-        let kw = TensorSnapshot::from_data(kd, spec.k_weight.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new());
-        let vw = TensorSnapshot::from_data(vd, spec.v_weight.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new());
+        let qw = TensorSnapshot::from_data(
+            qd,
+            spec.q_weight.split('.').map(|s| s.to_string()).collect(),
+            vec!["SafeTensor".to_string()],
+            burn_core::module::ParamId::new(),
+        );
+        let kw = TensorSnapshot::from_data(
+            kd,
+            spec.k_weight.split('.').map(|s| s.to_string()).collect(),
+            vec!["SafeTensor".to_string()],
+            burn_core::module::ParamId::new(),
+        );
+        let vw = TensorSnapshot::from_data(
+            vd,
+            spec.v_weight.split('.').map(|s| s.to_string()).collect(),
+            vec!["SafeTensor".to_string()],
+            burn_core::module::ParamId::new(),
+        );
 
         let mut split_snaps = vec![qw, kw, vw];
 
         if let Some(fb) = &spec.fused_bias {
-            let bview = st.tensor(fb).map_err(|_| SafetensorsError::TensorNotFound(fb.clone()))?;
+            let bview = st
+                .tensor(fb)
+                .map_err(|_| SafetensorsError::TensorNotFound(fb.clone()))?;
             let bdtype = burn_dtype_from_safetensors(bview.dtype())?;
             let bshape = bview.shape().to_vec();
             let bbytes = bview.data().to_vec();
-            let (qb, kb, vb) = split_along_last_dim(&bbytes, &bshape, bdtype, (q_size, k_size, v_size));
+            let (qb, kb, vb) =
+                split_along_last_dim(&bbytes, &bshape, bdtype, (q_size, k_size, v_size));
             if let Some(qb_name) = &spec.q_bias {
-                split_snaps.push(TensorSnapshot::from_data(qb, qb_name.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new()));
+                split_snaps.push(TensorSnapshot::from_data(
+                    qb,
+                    qb_name.split('.').map(|s| s.to_string()).collect(),
+                    vec!["SafeTensor".to_string()],
+                    burn_core::module::ParamId::new(),
+                ));
             }
             if let Some(kb_name) = &spec.k_bias {
-                split_snaps.push(TensorSnapshot::from_data(kb, kb_name.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new()));
+                split_snaps.push(TensorSnapshot::from_data(
+                    kb,
+                    kb_name.split('.').map(|s| s.to_string()).collect(),
+                    vec!["SafeTensor".to_string()],
+                    burn_core::module::ParamId::new(),
+                ));
             }
             if let Some(vb_name) = &spec.v_bias {
-                split_snaps.push(TensorSnapshot::from_data(vb, vb_name.split('.').map(|s| s.to_string()).collect(), vec!["SafeTensor".to_string()], burn_core::module::ParamId::new()));
+                split_snaps.push(TensorSnapshot::from_data(
+                    vb,
+                    vb_name.split('.').map(|s| s.to_string()).collect(),
+                    vec!["SafeTensor".to_string()],
+                    burn_core::module::ParamId::new(),
+                ));
             }
         }
 
@@ -167,7 +235,10 @@ where
 
     let result = model.apply(snapshots);
     if validate && !result.errors.is_empty() {
-        return Err(SafetensorsError::ValidationFailed(format!("Import errors: {:?}", result.errors)));
+        return Err(SafetensorsError::ValidationFailed(format!(
+            "Import errors: {:?}",
+            result.errors
+        )));
     }
     if !allow_partial && !result.missing.is_empty() {
         return Err(SafetensorsError::TensorNotFound(format!(

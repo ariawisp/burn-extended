@@ -1,4 +1,4 @@
-use burn::backend::Backend;
+use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Tensor};
 use burn_ndarray::NdArray;
 

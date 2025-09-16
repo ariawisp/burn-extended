@@ -25,7 +25,9 @@ fn main() {
 
     let rope = RotaryEncodingConfig::new(4096, head_dim).init::<B>(&device);
 
-    let mut cache = burn_extended::attention::StreamingMhaCache::new(&device, b, cache_len, n_heads, head_dim, /*sink*/ 0);
+    let mut cache = burn_extended::attention::StreamingMhaCache::new(
+        &device, b, cache_len, n_heads, head_dim, /*sink*/ 0,
+    );
     let x = Tensor::<B, 3>::random([b, t, d_model], Distribution::Default, &device);
 
     let mut outputs = Vec::new();
@@ -39,7 +41,12 @@ fn main() {
         let y = smha.forward_streaming(
             x.clone().slice([0..b, start..start + chunk, 0..d_model]),
             &mut cache,
-            ExtStreamingParams { rope: Some(&rope), start_pos: start, window: AttnWindow::Window(win), attn_bias: Some(&bias) },
+            ExtStreamingParams {
+                rope: Some(&rope),
+                start_pos: start,
+                window: AttnWindow::Window(win),
+                attn_bias: Some(&bias),
+            },
         );
         outputs.push(y);
     }

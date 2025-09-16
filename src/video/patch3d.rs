@@ -3,7 +3,7 @@ use burn_core as burn;
 use burn::config::Config;
 use burn::module::Module;
 use burn::nn::conv::{Conv3d, Conv3dConfig, ConvTranspose3d, ConvTranspose3dConfig};
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 
 #[derive(Config, Debug)]
 pub struct VideoPatchEmbeddingConfig {
@@ -17,7 +17,11 @@ pub struct VideoPatchEmbeddingConfig {
 }
 
 #[derive(Module, Debug)]
-pub struct VideoPatchEmbedding<B: Backend> { conv: Conv3d<B>, patch: [usize; 3], stride: [usize; 3] }
+pub struct VideoPatchEmbedding<B: Backend> {
+    conv: Conv3d<B>,
+    patch: [usize; 3],
+    stride: [usize; 3],
+}
 
 impl VideoPatchEmbeddingConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> VideoPatchEmbedding<B> {
@@ -26,7 +30,11 @@ impl VideoPatchEmbeddingConfig {
             .with_stride(stride)
             .with_bias(self.bias)
             .init(device);
-        VideoPatchEmbedding { conv, patch: self.patch_size, stride }
+        VideoPatchEmbedding {
+            conv,
+            patch: self.patch_size,
+            stride,
+        }
     }
 }
 
@@ -45,7 +53,9 @@ impl<B: Backend> VideoPatchEmbedding<B> {
         let [_, d, fp, hp, wp] = y.dims();
         y.reshape([b, d, fp * hp * wp]).swap_dims(1, 2)
     }
-    pub fn forward_5d(&self, x: Tensor<B, 5>) -> Tensor<B, 5> { self.conv.forward(x) }
+    pub fn forward_5d(&self, x: Tensor<B, 5>) -> Tensor<B, 5> {
+        self.conv.forward(x)
+    }
 }
 
 #[derive(Config, Debug)]
@@ -59,7 +69,10 @@ pub struct VideoUnpatchifyConfig {
 }
 
 #[derive(Module, Debug)]
-pub struct VideoUnpatchify<B: Backend> { deconv: ConvTranspose3d<B>, stride: [usize; 3] }
+pub struct VideoUnpatchify<B: Backend> {
+    deconv: ConvTranspose3d<B>,
+    stride: [usize; 3],
+}
 
 impl VideoUnpatchifyConfig {
     pub fn init<B: Backend>(&self, embed_dim: usize, device: &B::Device) -> VideoUnpatchify<B> {
@@ -80,6 +93,7 @@ impl<B: Backend> VideoUnpatchify<B> {
         let x = tokens.swap_dims(1, 2).reshape([b, d, fp, hp, wp]);
         self.deconv.forward(x)
     }
-    pub fn forward_5d(&self, x: Tensor<B, 5>) -> Tensor<B, 5> { self.deconv.forward(x) }
+    pub fn forward_5d(&self, x: Tensor<B, 5>) -> Tensor<B, 5> {
+        self.deconv.forward(x)
+    }
 }
-

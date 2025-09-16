@@ -18,26 +18,40 @@ pub fn evict_and_roll_mha<B: Backend>(
         return;
     }
 
-    let k_sub = cache
-        .k
-        .clone()
-        .slice([0..batch_size, sink_tokens..cache.local_end_index, 0..n_heads, 0..d_k]);
+    let k_sub = cache.k.clone().slice([
+        0..batch_size,
+        sink_tokens..cache.local_end_index,
+        0..n_heads,
+        0..d_k,
+    ]);
     let k_rolled = k_sub.roll(&[-(num_evicted as i64)], &[1]);
     cache.k.inplace(|t| {
         t.slice_assign(
-            [0..batch_size, sink_tokens..sink_tokens + avail, 0..n_heads, 0..d_k],
+            [
+                0..batch_size,
+                sink_tokens..sink_tokens + avail,
+                0..n_heads,
+                0..d_k,
+            ],
             k_rolled,
         )
     });
 
-    let v_sub = cache
-        .v
-        .clone()
-        .slice([0..batch_size, sink_tokens..cache.local_end_index, 0..n_heads, 0..d_k]);
+    let v_sub = cache.v.clone().slice([
+        0..batch_size,
+        sink_tokens..cache.local_end_index,
+        0..n_heads,
+        0..d_k,
+    ]);
     let v_rolled = v_sub.roll(&[-(num_evicted as i64)], &[1]);
     cache.v.inplace(|t| {
         t.slice_assign(
-            [0..batch_size, sink_tokens..sink_tokens + avail, 0..n_heads, 0..d_k],
+            [
+                0..batch_size,
+                sink_tokens..sink_tokens + avail,
+                0..n_heads,
+                0..d_k,
+            ],
             v_rolled,
         )
     });
@@ -61,26 +75,40 @@ pub fn evict_and_roll_mqa<B: Backend>(
         return;
     }
 
-    let k_sub = cache
-        .k
-        .clone()
-        .slice([0..batch_size, sink_tokens..cache.local_end_index, 0..kv_heads, 0..d_k]);
+    let k_sub = cache.k.clone().slice([
+        0..batch_size,
+        sink_tokens..cache.local_end_index,
+        0..kv_heads,
+        0..d_k,
+    ]);
     let k_rolled = k_sub.roll(&[-(num_evicted as i64)], &[1]);
     cache.k.inplace(|t| {
         t.slice_assign(
-            [0..batch_size, sink_tokens..sink_tokens + avail, 0..kv_heads, 0..d_k],
+            [
+                0..batch_size,
+                sink_tokens..sink_tokens + avail,
+                0..kv_heads,
+                0..d_k,
+            ],
             k_rolled,
         )
     });
 
-    let v_sub = cache
-        .v
-        .clone()
-        .slice([0..batch_size, sink_tokens..cache.local_end_index, 0..kv_heads, 0..d_k]);
+    let v_sub = cache.v.clone().slice([
+        0..batch_size,
+        sink_tokens..cache.local_end_index,
+        0..kv_heads,
+        0..d_k,
+    ]);
     let v_rolled = v_sub.roll(&[-(num_evicted as i64)], &[1]);
     cache.v.inplace(|t| {
         t.slice_assign(
-            [0..batch_size, sink_tokens..sink_tokens + avail, 0..kv_heads, 0..d_k],
+            [
+                0..batch_size,
+                sink_tokens..sink_tokens + avail,
+                0..kv_heads,
+                0..d_k,
+            ],
             v_rolled,
         )
     });

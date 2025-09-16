@@ -4,11 +4,11 @@ use burn::module::{Content, DisplaySettings, Module, ModuleDisplay};
 use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig};
 use burn::{
     config::Config,
-    tensor::{Tensor, backend::Backend},
+    tensor::{backend::Backend, Tensor},
 };
 
-use super::{AttnWindow, StreamingMhaCache};
 use super::streaming::update_cache_window;
+use super::{AttnWindow, StreamingMhaCache};
 
 /// Configuration for the extended streaming multi-head attention module.
 #[derive(Config, Debug)]
@@ -124,11 +124,14 @@ impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
 
         let attn_scores = crate::attention::compute_scores(q, k_win, self.d_k, &self.dropout);
         let attn_bias = params.attn_bias.cloned();
-        let weights = crate::attention::apply_bias_and_softmax(attn_scores, attn_bias, self.quiet_softmax);
+        let weights =
+            crate::attention::apply_bias_and_softmax(attn_scores, attn_bias, self.quiet_softmax);
 
-        let context = weights.matmul(v_win)
-            .swap_dims(1, 2)
-            .reshape([batch_size, seq_len, self.d_model]);
+        let context =
+            weights
+                .matmul(v_win)
+                .swap_dims(1, 2)
+                .reshape([batch_size, seq_len, self.d_model]);
         self.output.forward(context)
     }
 

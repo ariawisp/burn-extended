@@ -1,14 +1,14 @@
 use burn_core as burn;
 extern crate alloc;
 
-use burn::tensor::{Int, Tensor, backend::Backend};
-use burn_tensor::{TensorData, activation::softmax};
+use burn::tensor::{backend::Backend, Int, Tensor};
+use burn_tensor::{activation::softmax, TensorData};
 
 /// Basic logits processing configuration for sampling.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SamplerConfig {
-    pub temperature: f32,             // <= 0.0 means greedy
-    pub top_k: Option<usize>,         // keep top-k logits, mask others
+    pub temperature: f32,     // <= 0.0 means greedy
+    pub top_k: Option<usize>, // keep top-k logits, mask others
     pub repetition_penalty: Option<f32>,
     pub frequency_penalty: Option<f32>,
     pub presence_penalty: Option<f32>,
@@ -16,7 +16,7 @@ pub struct SamplerConfig {
 
 /// Apply temperature scaling to logits. No-op if `temperature <= 0` or `temperature == 1`.
 pub fn apply_temperature<B: Backend>(logits: Tensor<B, 2>, temperature: f32) -> Tensor<B, 2> {
-    if temperature > 0.0 && (temperature - 1.0).abs() > core::f32::EPSILON {
+    if temperature > 0.0 && (temperature - 1.0).abs() > f32::EPSILON {
         // Clone logits to avoid moving and use default tensor shape inference
         logits.clone() / Tensor::<B, 1>::from_floats([temperature], &logits.device()).unsqueeze()
     } else {
@@ -27,7 +27,9 @@ pub fn apply_temperature<B: Backend>(logits: Tensor<B, 2>, temperature: f32) -> 
 /// Mask logits outside the top-k per row by setting them to -inf.
 /// Note: This is an O(V*logV) CPU fallback using host sorting for portability.
 pub fn apply_top_k_cpu<B: Backend>(logits: Tensor<B, 2>, k: usize) -> Tensor<B, 2> {
-    if k == 0 { return logits; }
+    if k == 0 {
+        return logits;
+    }
     let device = logits.device();
     let [b, v] = logits.dims();
     let data = logits
@@ -40,7 +42,11 @@ pub fn apply_top_k_cpu<B: Backend>(logits: Tensor<B, 2>, k: usize) -> Tensor<B, 
         let row = &data[bi * v..(bi + 1) * v];
         // Indices sorted by logit descending
         let mut idx: Vec<usize> = (0..v).collect();
-        idx.sort_unstable_by(|&i, &j| row[j].partial_cmp(&row[i]).unwrap_or(core::cmp::Ordering::Equal));
+        idx.sort_unstable_by(|&i, &j| {
+            row[j]
+                .partial_cmp(&row[i])
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         for &col in idx.iter().take(k.min(v)) {
             out[bi * v + col] = row[col];
         }
@@ -73,11 +79,15 @@ pub fn apply_penalties_cpu<B: Backend>(
 
     for bi in 0..b.min(tokens_history.unwrap().len()) {
         let history = &tokens_history.unwrap()[bi];
-        if history.is_empty() { continue; }
+        if history.is_empty() {
+            continue;
+        }
         // Count occurrences
         let mut counts = vec![0usize; v];
         for &tok in history.iter() {
-            if tok < v { counts[tok] += 1; }
+            if tok < v {
+                counts[tok] += 1;
+            }
         }
         for tok in 0..v {
             let c = counts[tok] as f32;
@@ -118,7 +128,12 @@ pub fn sample_multinomial_cpu<B: Backend>(logits: Tensor<B, 2>) -> Tensor<B, 1, 
     let mut rng = rand::rng();
     for bi in 0..b {
         let row = &probs[bi * v..(bi + 1) * v];
-        let dist = WeightedIndex::new(row.iter().map(|&p| if p.is_finite() && p > 0.0 { p } else { 0.0 })).unwrap();
+        let dist =
+            WeightedIndex::new(
+                row.iter()
+                    .map(|&p| if p.is_finite() && p > 0.0 { p } else { 0.0 }),
+            )
+            .unwrap();
         let sample = dist.sample(&mut rng) as i64;
         out[bi] = sample;
     }
@@ -134,11 +149,23 @@ pub fn process_and_sample<B: Backend>(
 ) -> Tensor<B, 1, Int> {
     // Build a default pipeline from config
     let mut list = ProcessorList::new();
-    if let Some(k) = cfg.top_k { list.push(TopKProcessor { k }); }
-    list.push(PenaltyProcessor { repetition_penalty: cfg.repetition_penalty, frequency_penalty: cfg.frequency_penalty, presence_penalty: cfg.presence_penalty });
-    list.push(TemperatureProcessor { temperature: cfg.temperature });
+    if let Some(k) = cfg.top_k {
+        list.push(TopKProcessor { k });
+    }
+    list.push(PenaltyProcessor {
+        repetition_penalty: cfg.repetition_penalty,
+        frequency_penalty: cfg.frequency_penalty,
+        presence_penalty: cfg.presence_penalty,
+    });
+    list.push(TemperatureProcessor {
+        temperature: cfg.temperature,
+    });
     let l = list.apply(logits, tokens_history);
-    if cfg.temperature <= 0.0 && greedy_when_temp_zero { sample_greedy(l) } else { sample_multinomial_cpu(l) }
+    if cfg.temperature <= 0.0 && greedy_when_temp_zero {
+        sample_greedy(l)
+    } else {
+        sample_multinomial_cpu(l)
+    }
 }
 
 /// A composable logits processor.
@@ -152,22 +179,34 @@ pub struct ProcessorList<B: Backend> {
 }
 
 impl<B: Backend> ProcessorList<B> {
-    pub fn new() -> Self { Self { procs: alloc::vec::Vec::new() } }
-    pub fn push<P: LogitsProcessor<B> + 'static>(&mut self, p: P) { self.procs.push(alloc::boxed::Box::new(p)); }
+    pub fn new() -> Self {
+        Self {
+            procs: alloc::vec::Vec::new(),
+        }
+    }
+    pub fn push<P: LogitsProcessor<B> + 'static>(&mut self, p: P) {
+        self.procs.push(alloc::boxed::Box::new(p));
+    }
     pub fn apply(&self, mut logits: Tensor<B, 2>, history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
-        for p in &self.procs { logits = p.process(logits, history); }
+        for p in &self.procs {
+            logits = p.process(logits, history);
+        }
         logits
     }
 }
 
-pub struct TemperatureProcessor { pub temperature: f32 }
+pub struct TemperatureProcessor {
+    pub temperature: f32,
+}
 impl<B: Backend> LogitsProcessor<B> for TemperatureProcessor {
     fn process(&self, logits: Tensor<B, 2>, _history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
         apply_temperature(logits, self.temperature)
     }
 }
 
-pub struct TopKProcessor { pub k: usize }
+pub struct TopKProcessor {
+    pub k: usize,
+}
 impl<B: Backend> LogitsProcessor<B> for TopKProcessor {
     fn process(&self, logits: Tensor<B, 2>, _history: Option<&[Vec<usize>]>) -> Tensor<B, 2> {
         apply_top_k_cpu(logits, self.k)

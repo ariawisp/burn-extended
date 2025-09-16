@@ -1,8 +1,7 @@
 use burn_core as burn;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Tensor};
 use burn_tensor::activation::sigmoid;
-use std::convert::TryInto;
 
 /// Applies SwiGLU activation with an optional clamp applied to the result.
 ///
@@ -35,6 +34,6 @@ pub fn swiglu_clamp<B: Backend, const D: usize>(
 
     dims[last_index] = half;
     // Reshape back to original rank `D`
-    let shape: [usize; D] = dims.try_into().expect("invalid shape");
+    let shape: [usize; D] = dims;
     activated.reshape(shape)
 }

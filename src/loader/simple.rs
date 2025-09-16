@@ -1,8 +1,8 @@
 use burn_core as burn;
 
 use burn::module::Module;
-use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
 use burn_store::safetensors::SafetensorsError;
+use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
 use burn_tensor::backend::Backend;
 
 use std::path::Path;
