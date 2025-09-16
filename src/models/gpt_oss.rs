@@ -178,13 +178,7 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
         // Forward through layers with streaming MQA
         for (l, layer) in self.layers.iter().enumerate() {
             let policy_win = self.cfg.0.window_policy.window_for(l);
-            let layer_window = match (window, policy_win) {
-                (AttnWindow::Full, w) => w,
-                (AttnWindow::Window(u), AttnWindow::Window(v)) => {
-                    AttnWindow::Window(core::cmp::min(u, v))
-                }
-                (AttnWindow::Window(u), AttnWindow::Full) => AttnWindow::Window(u),
-            };
+            let layer_window = crate::cache::combine_windows(window, policy_win);
             let state = crate::generate::runner::StreamState {
                 start_pos,
                 window: layer_window,

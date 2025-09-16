@@ -142,3 +142,36 @@ fn streaming_mqa_quiet_softmax_executes() {
     );
     assert_eq!(out.dims(), [b, t, d_model]);
 }
+
+#[test]
+fn streaming_mqa_uses_module_sinks_when_set() {
+    let device = device();
+    let b = 1;
+    let t = 8;
+    let d_model = 16;
+    let n_heads = 4;
+    let kv_heads = 2;
+    let groups = n_heads / kv_heads;
+
+    let mut attn = StreamingMultiQueryAttentionConfig::new(d_model, n_heads, kv_heads)
+        .with_dropout(0.0)
+        .init::<TB>(&device);
+    // Set a simple sinks vector [n_heads]
+    let sinks = Tensor::<TB, 1>::from_floats([0.0; 4], &device);
+    attn.sinks_weight = Some(sinks);
+
+    let mut cache = StreamingMqaCache::new(&device, b, 32, kv_heads, d_model / n_heads, 0);
+    let x = Tensor::<TB, 3>::random([b, t, d_model], Distribution::Default, &device);
+    let out = attn.forward_streaming(
+        x,
+        &mut cache,
+        StreamingMqaParams {
+            rope: None,
+            start_pos: 0,
+            window: AttnWindow::Window(t),
+            sinks: None,
+            attn_bias: None,
+        },
+    );
+    assert_eq!(out.dims(), [b, t, d_model]);
+}

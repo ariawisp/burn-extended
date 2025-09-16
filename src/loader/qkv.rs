@@ -248,3 +248,55 @@ where
     }
     Ok(result)
 }
+/// Load specific tensor entries from a SafeTensors file and map them to module parameter paths.
+/// Each mapping is `(source_name_in_file, target.module.path)` where the target uses dot‑separated
+/// module/field names matching the Module record paths.
+pub fn load_safetensors_map<B: Backend, M>(
+    model: &mut M,
+    path: &Path,
+    mappings: &[(String, String)],
+    from_pytorch: bool,
+    allow_partial: bool,
+    validate: bool,
+) -> Result<ApplyResult, SafetensorsError>
+where
+    M: Module<B> + Clone,
+{
+    use std::fs;
+    let data = fs::read(path).map_err(|err| SafetensorsError::Other(err.to_string()))?;
+    let st =
+        SafeTensors::deserialize(&data).map_err(|err| SafetensorsError::Other(err.to_string()))?;
+
+    let mut snapshots: Vec<TensorSnapshot> = Vec::new();
+    for (src, dst) in mappings.iter() {
+        let view = st
+            .tensor(src)
+            .map_err(|_| SafetensorsError::TensorNotFound(src.clone()))?;
+        let mut snap = view_to_snapshot(src, &view)?;
+        // Rewrite the path to target module path
+        let dst_path: Vec<String> = dst.split('.').map(|s| s.to_string()).collect();
+        snap.path_stack = Some(dst_path);
+        if from_pytorch {
+            if let Some(adapted) = PyTorchToBurnAdapter.adapt_tensor(&snap) {
+                snapshots.push(adapted);
+            }
+        } else {
+            snapshots.push(snap);
+        }
+    }
+
+    let result = model.apply(snapshots);
+    if validate && !result.errors.is_empty() {
+        return Err(SafetensorsError::ValidationFailed(format!(
+            "Import errors: {:?}",
+            result.errors
+        )));
+    }
+    if !allow_partial && !result.missing.is_empty() {
+        return Err(SafetensorsError::TensorNotFound(format!(
+            "Missing tensors: {:?}",
+            result.missing
+        )));
+    }
+    Ok(result)
+}

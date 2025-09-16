@@ -55,6 +55,8 @@ pub struct StreamingMultiQueryAttention<B: Backend> {
     pub d_k: usize,
     /// Use quiet softmax.
     pub quiet_softmax: bool,
+    /// Optional learned sinks weight per head `[n_heads]`.
+    pub sinks_weight: Option<Tensor<B, 1>>,
 }
 
 impl<B: Backend> ModuleDisplay for StreamingMultiQueryAttention<B> {
@@ -107,6 +109,7 @@ impl StreamingMultiQueryAttentionConfig {
             kv_heads: self.num_key_value_heads,
             d_k,
             quiet_softmax: self.quiet_softmax,
+            sinks_weight: None,
         }
     }
 }
@@ -370,6 +373,16 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             crate::attention::apply_sinks_then_softmax(
                 attn_scores,
                 sinks,
+                batch_size,
+                self.n_heads,
+                seq_len,
+                active_len,
+                self.quiet_softmax,
+            )
+        } else if let Some(sinks) = self.sinks_weight.as_ref() {
+            crate::attention::apply_sinks_then_softmax(
+                attn_scores,
+                sinks.clone(), // [nH]
                 batch_size,
                 self.n_heads,
                 seq_len,

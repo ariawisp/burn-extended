@@ -32,6 +32,55 @@ impl WindowPolicy {
     }
 }
 
+/// Combine two window specifications conservatively.
+/// - If either is `Full`, return the other.
+/// - If both are `Window(u)`/`Window(v)`, return `Window(min(u, v))`.
+pub fn combine_windows(a: AttnWindow, b: AttnWindow) -> AttnWindow {
+    match (a, b) {
+        (AttnWindow::Full, w) => w,
+        (w, AttnWindow::Full) => w,
+        (AttnWindow::Window(u), AttnWindow::Window(v)) => AttnWindow::Window(core::cmp::min(u, v)),
+    }
+}
+
+/// Minimal trait for rolling KV caches used in streaming attention.
+pub trait RollingKvCache<B: Backend> {
+    fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
+    fn is_full(&self) -> bool;
+    fn clear(&mut self);
+}
+
+impl<B: Backend> RollingKvCache<B> for StreamingMhaCache<B> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn is_full(&self) -> bool {
+        self.is_full()
+    }
+    fn clear(&mut self) {
+        self.clear();
+    }
+}
+
+impl<B: Backend> RollingKvCache<B> for StreamingMqaCache<B> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn is_full(&self) -> bool {
+        self.is_full()
+    }
+    fn clear(&mut self) {
+        self.clear();
+    }
+}
+
 /// Manages a set of streaming MQA caches (one per layer).
 pub struct MqaCacheManager<B: Backend> {
     pub caches: alloc::vec::Vec<StreamingMqaCache<B>>,
