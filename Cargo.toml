@@ -9,12 +9,12 @@ documentation = "https://docs.rs/burn-extended"
 publish = false
 
 [dependencies]
-burn        = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn",        default-features = false, features = ["wgpu"] }
-burn-core   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-core",   default-features = false }
-burn-ndarray = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-ndarray", default-features = false, features = ["std"] }
-burn-store  = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-store",  default-features = false }
-burn-tensor = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-tensor", default-features = false }
-burn-wgpu   = { git = "https://github.com/antimora/burn", rev = "7235cf2f5cd501d2abc578865a592e6fb59d1772", package = "burn-wgpu",   default-features = false }
+burn        = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn",        default-features = false, features = ["wgpu"] }
+burn-core   = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-core",   default-features = false }
+burn-ndarray = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-ndarray", default-features = false, features = ["std"] }
+burn-store  = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-store",  default-features = false }
+burn-tensor = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-tensor", default-features = false }
+burn-wgpu   = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-wgpu",   default-features = false }
 clap = { version = "4.5.47", features = ["derive"], default-features = true }
 hashbrown = "0.15.0"
 num-traits = "0.2.19"

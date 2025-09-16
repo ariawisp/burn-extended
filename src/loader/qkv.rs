@@ -79,9 +79,9 @@ fn split_along_last_dim(
     *v_shape.last_mut().unwrap() = v;
 
     (
-        TensorData::from_bytes(qb, q_shape, dtype),
-        TensorData::from_bytes(kb, k_shape, dtype),
-        TensorData::from_bytes(vb, v_shape, dtype),
+        TensorData::from_bytes_vec(qb, q_shape, dtype),
+        TensorData::from_bytes_vec(kb, k_shape, dtype),
+        TensorData::from_bytes_vec(vb, v_shape, dtype),
     )
 }
 
@@ -92,7 +92,7 @@ fn view_to_snapshot(name: &str, view: &TensorView) -> Result<TensorSnapshot, Saf
     let bytes = view.data().to_vec();
     let shape_for_fn = shape.clone();
     let data_fn = alloc::rc::Rc::new(move || {
-        TensorData::from_bytes(bytes.clone(), shape_for_fn.clone(), dtype)
+        TensorData::from_bytes_vec(bytes.clone(), shape_for_fn.clone(), dtype)
     });
     Ok(TensorSnapshot::from_closure(
         data_fn,

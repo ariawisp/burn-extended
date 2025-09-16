@@ -201,6 +201,19 @@ pub struct StreamingMqaParams<'a, B: Backend> {
     pub attn_bias: Option<&'a Tensor<B, 4>>,
 }
 
+// Ergonomics: allow using base StreamingParams with MQA by defaulting optional fields.
+impl<'a, B: Backend> From<crate::attention::StreamingParams<'a, B>> for StreamingMqaParams<'a, B> {
+    fn from(p: crate::attention::StreamingParams<'a, B>) -> Self {
+        Self {
+            rope: p.rope,
+            start_pos: p.start_pos,
+            window: p.window,
+            sinks: None,
+            attn_bias: None,
+        }
+    }
+}
+
 impl<B: Backend> StreamingMultiQueryAttention<B> {
     /// Forward with streaming KV cache and optional windowing and sinks bias.
     ///

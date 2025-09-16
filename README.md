@@ -46,6 +46,9 @@ Those notes stay model-specific so this README can highlight the primitives at a
 
 ```bash
 cargo run -p burn-extended --example gpt_oss
+cargo run -p burn-extended --example diffusion_demo
+cargo run -p burn-extended --example decoder_demo
+cargo run -p burn-extended --example streaming_mqa_demo
 cargo run -p burn-extended --example ace_step
 cargo run -p burn-extended --example matrix_game_2
 ```

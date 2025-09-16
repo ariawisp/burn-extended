@@ -95,6 +95,18 @@ pub struct ExtStreamingParams<'a, B: Backend> {
     pub attn_bias: Option<&'a Tensor<B, 4>>,
 }
 
+// Ergonomics: allow using base StreamingParams with ExtStreamingParams by defaulting `attn_bias`.
+impl<'a, B: Backend> From<crate::attention::StreamingParams<'a, B>> for ExtStreamingParams<'a, B> {
+    fn from(p: crate::attention::StreamingParams<'a, B>) -> Self {
+        Self {
+            rope: p.rope,
+            start_pos: p.start_pos,
+            window: p.window,
+            attn_bias: None,
+        }
+    }
+}
+
 impl<B: Backend> ExtStreamingMultiHeadAttention<B> {
     pub fn forward_streaming(
         &self,
