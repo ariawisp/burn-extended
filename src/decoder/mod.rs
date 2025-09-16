@@ -2,8 +2,7 @@ use burn_core as burn;
 
 use burn::config::Config;
 use burn::module::Module;
-use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig};
-use burn::nn::rms_norm::{RmsNorm, RmsNormConfig};
+use burn::nn::{Dropout, DropoutConfig, Initializer, Linear, LinearConfig, RmsNorm, RmsNormConfig};
 use burn::tensor::{Bool, Tensor, backend::Backend};
 
 use crate::activation::swiglu_clamp;

@@ -4,7 +4,7 @@ use burn::module::Module;
 use burn_store::{ApplyResult, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
 use burn_tensor::backend::Backend;
 
-use core::path::Path;
+use std::path::Path;
 
 /// Simple loader configuration for 1:1 mapping cases.
 #[derive(Clone, Debug, Default)]

@@ -88,7 +88,7 @@ impl ExtStreamingMultiHeadAttentionConfig {
 
 /// Parameters for extended streaming attention forward.
 pub struct ExtStreamingParams<'a, B: Backend> {
-    pub rope: Option<&'a burn::nn::rope_encoding::RotaryEncoding<B>>,
+    pub rope: Option<&'a burn::nn::RotaryEncoding<B>>,
     pub start_pos: usize,
     pub window: AttnWindow,
     /// Optional additive bias on attention logits `[B, n_heads, q_len, k_len]` matching window.

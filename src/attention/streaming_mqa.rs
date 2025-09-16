@@ -190,7 +190,7 @@ impl<B: Backend> StreamingMqaCache<B> {
 /// Parameters for streaming MQA forward.
 pub struct StreamingMqaParams<'a, B: Backend> {
     /// Optional rotary encoding to apply to Q and K with an absolute start offset.
-    pub rope: Option<&'a burn::nn::rope_encoding::RotaryEncoding<B>>,
+    pub rope: Option<&'a burn::nn::RotaryEncoding<B>>,
     /// Absolute position of the first token in the current chunk.
     pub start_pos: usize,
     /// Window selection policy.

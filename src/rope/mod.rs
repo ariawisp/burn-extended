@@ -1,6 +1,6 @@
 use burn_core as burn;
 
-use burn::nn::rope_encoding::RotaryEncoding;
+use burn::nn::{RotaryEncoding, RotaryEncodingConfig};
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
 
@@ -17,7 +17,7 @@ pub fn init_ntk_yarn<B: Backend>(
     ntk_alpha: f32,
     ntk_beta: f32,
 ) -> RotaryEncoding<B> {
-    let config = burn::nn::rope_encoding::RotaryEncodingConfig::new(max_sequence_length, head_dim);
+    let config = RotaryEncodingConfig::new(max_sequence_length, head_dim);
     if scaling_factor <= 1.0 {
         return config.init::<B>(device);
     }

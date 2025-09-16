@@ -1,3 +1,5 @@
+use burn_core as burn;
+
 use burn::tensor::{Tensor, backend::Backend};
 use burn_tensor::activation::sigmoid;
 

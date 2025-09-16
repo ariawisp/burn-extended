@@ -175,7 +175,7 @@ impl<B: Backend> StreamingMhaCache<B> {
 
 /// Parameters for streaming attention forward passes.
 pub struct StreamingParams<'a, B: Backend> {
-    pub rope: Option<&'a burn::nn::rope_encoding::RotaryEncoding<B>>,
+    pub rope: Option<&'a burn::nn::RotaryEncoding<B>>,
     pub start_pos: usize,
     pub window: AttnWindow,
 }
