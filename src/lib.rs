@@ -3,6 +3,7 @@
 extern crate alloc;
 
 // Alias burn-core as `burn` so derive macros and internal paths match expectations.
+#[allow(unused_imports)]
 use burn_core as burn;
 
 pub mod attention;

@@ -1,7 +1,7 @@
 use burn_core as burn;
 
 use burn::tensor::backend::Backend;
-use crate::attention::{AttnWindow, StreamingMhaCache, StreamingMqaCache, StreamingMqaParams, StreamingParams};
+use crate::attention::{AttnWindow, StreamingMqaParams, StreamingParams};
 
 /// Minimal streaming state for chunked decoding.
 #[derive(Clone, Debug)]
@@ -17,18 +17,18 @@ impl StreamState {
 }
 
 impl StreamState {
-    pub fn params_mha<B: Backend>(
-        &self,
-        rope: Option<&burn::nn::RotaryEncoding<B>>,
-    ) -> StreamingParams<B> {
+    pub fn params_mha<'a, B: Backend>(
+        &'a self,
+        rope: Option<&'a burn::nn::RotaryEncoding<B>>,
+    ) -> StreamingParams<'a, B> {
         StreamingParams { rope, start_pos: self.start_pos, window: self.window }
     }
 
-    pub fn params_mqa<B: Backend>(
-        &self,
-        rope: Option<&burn::nn::RotaryEncoding<B>>,
-        sinks: Option<&burn::tensor::Tensor<B, 2>>,
-    ) -> StreamingMqaParams<B> {
+    pub fn params_mqa<'a, B: Backend>(
+        &'a self,
+        rope: Option<&'a burn::nn::RotaryEncoding<B>>,
+        sinks: Option<&'a burn::tensor::Tensor<B, 2>>,
+    ) -> StreamingMqaParams<'a, B> {
         StreamingMqaParams { rope, start_pos: self.start_pos, window: self.window, sinks, attn_bias: None }
     }
 }

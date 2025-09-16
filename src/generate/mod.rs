@@ -3,6 +3,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use burn::tensor::{Int, Tensor, backend::Backend};
+use burn_tensor::TensorData;
 
 use crate::attention::AttnWindow;
 use crate::sampling::{process_and_sample, SamplerConfig};
@@ -62,14 +63,18 @@ pub fn generate<B: Backend, M: AutoregressiveModel<B>>(
             for &tok in row_t.iter() { flat.push(tok as i64); }
             for _ in row_t.len()..max_t { flat.push(0); } // pad with 0; model should ignore via pad mask
         }
-        let input = Tensor::<B, 2, Int>::from_ints(flat, device).reshape([b, max_t]);
+        let input = Tensor::<B, 2, Int>::from_ints(TensorData::new(flat, [b, max_t]), device);
 
         let logits = model.forward_logits(input, &mut cache, start_pos.saturating_sub(1), cfg.window);
 
         // CPU-side history for penalties
         let history: Vec<Vec<usize>> = tokens.clone();
         let next = process_and_sample::<B>(logits, Some(&history), cfg.sampler, /*greedy_when_temp_zero*/ true);
-        let next_data = next.into_data().convert::<i64>().value;
+        let next_data = next
+            .into_data()
+            .convert::<i64>()
+            .into_vec::<i64>()
+            .expect("tokens to i64");
 
         // Append and check EOS
         let mut all_eos = true;
