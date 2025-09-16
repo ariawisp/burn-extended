@@ -93,4 +93,3 @@ impl<B: Backend> LinearAttention<B> {
         linear.forward(x).reshape([b, s, self.n_heads, self.d_k]).swap_dims(1, 2)
     }
 }
-

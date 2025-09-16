@@ -106,6 +106,7 @@ impl<B: Backend, const D: usize> DiffusionScheduler<B, D> for FlowMatchPingPong<
         let sigma_next = self.sigmas[i + 1];
 
         let denoised = sample.clone() - model_output.mul_scalar(sigma);
+        // Use the tensor's Shape directly for random generation
         let shape: [usize; D] = denoised.shape().dims();
         let noise = Tensor::<B, D>::random(shape, Distribution::Default, &denoised.device());
         let prev_sample = denoised.mul_scalar(1.0 - sigma_next) + noise.mul_scalar(sigma_next);
@@ -129,4 +130,3 @@ impl<B: Backend, const D: usize> DiffusionScheduler<B, D> for FlowMatchPingPong<
         noise.mul_scalar(sigma).add(sample.mul_scalar(1.0 - sigma))
     }
 }
-

@@ -344,6 +344,8 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
 
         // Additive attention bias (already shaped to window)
         if let Some(bias) = params.attn_bias {
+            // bias is a reference; dereference to add
+            // Clone bias to avoid moving the referenced tensor
             attn_scores = attn_scores + bias.clone();
         }
 

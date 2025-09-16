@@ -17,7 +17,8 @@ pub struct SamplerConfig {
 /// Apply temperature scaling to logits. No-op if `temperature <= 0` or `temperature == 1`.
 pub fn apply_temperature<B: Backend>(logits: Tensor<B, 2>, temperature: f32) -> Tensor<B, 2> {
     if temperature > 0.0 && (temperature - 1.0).abs() > core::f32::EPSILON {
-        logits.div_scalar(temperature)
+        // Clone logits to avoid moving and use default tensor shape inference
+        logits.clone() / Tensor::from_floats([temperature], &logits.device()).unsqueeze()
     } else {
         logits
     }
