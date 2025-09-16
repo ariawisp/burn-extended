@@ -13,6 +13,7 @@ use crate::attention::{
 };
 use crate::cache::{MqaCacheManager, WindowPolicy};
 use crate::generate::AutoregressiveModel;
+use crate::moe::{MoeConfig, MoeGatedSwiGLU};
 
 #[derive(Clone, Debug)]
 pub struct GptOssConfig {
@@ -22,6 +23,8 @@ pub struct GptOssConfig {
     pub n_heads: usize,
     pub kv_heads: usize,
     pub ffn_hidden: usize,
+    pub num_experts: usize,
+    pub experts_per_token: usize,
     pub dropout: f64,
     pub swiglu_alpha: f32,
     pub swiglu_limit: f32,
@@ -30,6 +33,13 @@ pub struct GptOssConfig {
     pub sink_tokens: usize,
     pub window_policy: WindowPolicy,
     pub max_seq_len: usize,
+    pub learned_sinks: bool,
+    // RoPE options
+    pub use_ntk_yarn: bool,
+    pub rope_scaling_factor: f32,
+    pub rope_initial_context: f32,
+    pub rope_ntk_alpha: f32,
+    pub rope_ntk_beta: f32,
 }
 
 impl Default for GptOssConfig {
@@ -41,6 +51,8 @@ impl Default for GptOssConfig {
             n_heads: 16,
             kv_heads: 4,
             ffn_hidden: 4096,
+            num_experts: 64,
+            experts_per_token: 4,
             dropout: 0.0,
             swiglu_alpha: 1.0,
             swiglu_limit: 7.0,
@@ -55,6 +67,12 @@ impl Default for GptOssConfig {
                 full_on_even: true,
             },
             max_seq_len: 8192,
+            learned_sinks: true,
+            use_ntk_yarn: false,
+            rope_scaling_factor: 32.0,
+            rope_initial_context: 4096.0,
+            rope_ntk_alpha: 1.0,
+            rope_ntk_beta: 32.0,
         }
     }
 }
@@ -63,11 +81,7 @@ impl Default for GptOssConfig {
 pub struct GptOssLayer<B: Backend> {
     attn: StreamingMultiQueryAttention<B>,
     norm_attn: RmsNorm<B>,
-    norm_ffn: RmsNorm<B>,
-    ffn_up: Linear<B>,
-    ffn_down: Linear<B>,
-    swiglu_alpha: f32,
-    swiglu_limit: f32,
+    mlp: MoeGatedSwiGLU<B>,
 }
 
 impl<B: Backend> GptOssLayer<B> {
@@ -81,11 +95,8 @@ impl<B: Backend> GptOssLayer<B> {
         let context = self.attn.forward_streaming(norm_attn, cache, params);
         let hidden = hidden + context;
 
-        let norm_ffn = self.norm_ffn.forward(hidden.clone());
-        let up = self.ffn_up.forward(norm_ffn);
-        let up = swiglu_clamp(up, self.swiglu_alpha, Some(self.swiglu_limit));
-        let down = self.ffn_down.forward(up);
-        hidden + down
+        // MoE block handles its own norm and residual add internally.
+        self.mlp.forward(hidden)
     }
 }
 
@@ -111,24 +122,24 @@ impl GptOssConfig {
                 StreamingMultiQueryAttentionConfig::new(self.d_model, self.n_heads, self.kv_heads)
                     .with_dropout(self.dropout)
                     .with_quiet_softmax(false)
+                    .with_learned_sinks(self.learned_sinks)
                     .with_initializer(self.initializer.clone())
                     .init::<B>(device);
             let norm_attn = RmsNormConfig::new(self.d_model).init::<B>(device);
-            let norm_ffn = RmsNormConfig::new(self.d_model).init::<B>(device);
-            let ffn_up = LinearConfig::new(self.d_model, self.ffn_hidden * 2)
-                .with_initializer(self.initializer.clone())
-                .init(device);
-            let ffn_down = LinearConfig::new(self.ffn_hidden, self.d_model)
-                .with_initializer(self.initializer.clone())
-                .init(device);
+            let mlp = MoeConfig {
+                d_model: self.d_model,
+                ffn_hidden: self.ffn_hidden,
+                num_experts: self.num_experts,
+                experts_per_token: self.experts_per_token,
+                swiglu_alpha: self.swiglu_alpha,
+                swiglu_limit: self.swiglu_limit,
+                initializer: self.initializer.clone(),
+            }
+            .init::<B>(device);
             layers.push(GptOssLayer {
                 attn,
                 norm_attn,
-                norm_ffn,
-                ffn_up,
-                ffn_down,
-                swiglu_alpha: self.swiglu_alpha,
-                swiglu_limit: self.swiglu_limit,
+                mlp,
             });
         }
 
@@ -136,8 +147,19 @@ impl GptOssConfig {
         let lm_head = LinearConfig::new(self.d_model, self.vocab_size)
             .with_initializer(self.initializer.clone())
             .init(device);
-        let rope =
-            burn::nn::RotaryEncodingConfig::new(self.max_seq_len, head_dim).init::<B>(device);
+        let rope = if self.use_ntk_yarn {
+            crate::rope::init_ntk_yarn::<B>(
+                self.max_seq_len,
+                head_dim,
+                device,
+                self.rope_scaling_factor,
+                self.rope_initial_context,
+                self.rope_ntk_alpha,
+                self.rope_ntk_beta,
+            )
+        } else {
+            burn::nn::RotaryEncodingConfig::new(self.max_seq_len, head_dim).init::<B>(device)
+        };
 
         GptOssModel {
             tok_emb,

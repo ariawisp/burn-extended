@@ -16,6 +16,7 @@ pub mod generate;
 pub mod image;
 pub mod loader;
 pub mod models;
+pub mod moe;
 pub mod rope;
 pub mod sampling;
 pub mod video;
