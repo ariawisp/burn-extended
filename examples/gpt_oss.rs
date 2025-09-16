@@ -4,7 +4,7 @@ use burn::backend::wgpu::{self, Wgpu as B, WgpuDevice};
 use burn::tensor::{Distribution, Tensor};
 
 use burn_extended::attention::{
-    AttnWindow, StreamingMqaCache, StreamingMqaParams, StreamingMultiQueryAttentionConfig,
+    alibi, AttnWindow, StreamingMqaCache, StreamingMqaParams, StreamingMultiQueryAttentionConfig,
 };
 use burn_extended::rope::init_ntk_yarn;
 
@@ -33,15 +33,37 @@ fn main() {
     let x = Tensor::<B, 3>::random([b, t, d_model], Distribution::Default, &device);
 
     let mut outputs = Vec::new();
+    let use_alibi = true; // toggle ALiBi bias demonstration
     for i in 0..(t / chunk) {
         let start = i * chunk;
         let x_i = x.clone().slice([0..b, start..start + chunk, 0..d_model]);
+        // With fixed window and no sink tokens, active_k = min(window, start+chunk)
+        let window_len = 128usize;
+        let active_k = (start + chunk).min(window_len);
+        // Compute absolute positions for ALiBi bias
+        let q_start = start;
+        let k_start = (start + chunk).saturating_sub(active_k);
+        let attn_bias = if use_alibi {
+            let slopes = alibi::alibi_slopes_tensor::<B>(n_heads, &device);
+            let bias = alibi::alibi_bias_for_positions::<B>(
+                b,
+                &slopes,
+                chunk,
+                active_k,
+                q_start,
+                k_start,
+                &device,
+            );
+            Some(bias)
+        } else {
+            None
+        };
         let params = StreamingMqaParams {
             rope: Some(&rope),
             start_pos: start,
-            window: AttnWindow::Window(128),
+            window: AttnWindow::Window(window_len),
             sinks: Some(&sinks),
-            attn_bias: None,
+            attn_bias: attn_bias.as_ref(),
         };
         let y = attn.forward_streaming(x_i, &mut cache, params);
         outputs.push(y);

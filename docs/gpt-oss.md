@@ -16,8 +16,9 @@ What burn-extended provides
 - Streaming MHA/MQA: `attention::StreamingMultiHeadAttention{Config}` and `attention::StreamingMultiQueryAttention{Config}`
   - `n_heads` and `num_key_value_heads` allow GQA head sharing.
   - Rolling KV cache, sink token preservation, and sliding `AttnWindow`.
-  - Optional sinks column via `StreamingMqaParams { sinks: Option<&Tensor<_,2>> }`.
-  - Optional additive attention bias via `attn_bias: Option<&Tensor<_,4>>` (for ALiBi or custom shaping).
+  - Optional sinks column via `StreamingMqaParams { sinks: Option<&Tensor<_,2>> }` or a learnable per‑layer parameter when `learned_sinks` is enabled on the attention config.
+- Optional additive attention bias via `attn_bias: Option<&Tensor<_,4>>` (for ALiBi or custom shaping).
+  - ALiBi helpers available in `attention::alibi` to construct per‑head linear biases aligned to absolute positions and active windows.
 - Non-streaming MQA: `attention::MultiQueryAttention{Config}` for training/eval without cache.
 - RoPE NTK/YaRN: `rope::init_ntk_yarn(...)` convenience over Burn's frequency-scaling hooks.
 - Mask helpers: `attention::mask1d::{lengths_to_mask, generate_causal_mask_1d, generate_windowed_causal_mask, generate_chunked_causal_mask_1d}` so curriculum or packed batches stay ergonomic.
@@ -34,6 +35,7 @@ Sinks bias
 - GPT‑OSS appends a learned sinks column (one extra logit) per head‑group.
 - In `StreamingMultiQueryAttention`, pass a `sinks` tensor with shape `[kv_heads, groups]`, which is flattened to `[n_heads]` internally, broadcast to `[B, n_heads, Tq, 1]`, concatenated to QK, softmaxed, then dropped before V matmul.
 - To disable sinks (but keep the branch wired), pass large negative logits (e.g., −1e9).
+- Alternatively, enable a learnable per‑layer sinks parameter by setting `.with_learned_sinks(true)` on `StreamingMultiQueryAttentionConfig`. When present and no runtime `params.sinks` is provided, the module uses its internal `[kv_heads, groups]` parameter for sinks.
 
 Sliding window policy (alternate layers)
 - Use `cache::WindowPolicy::EveryOther { window, full_on_even }` and apply `policy.window_for(layer_idx)` for each layer’s `AttnWindow`.
@@ -49,7 +51,22 @@ Weight import mapping (outline)
   - `k_weight: [hidden_size, kv_heads * head_dim]`
   - `v_weight: [hidden_size, kv_heads * head_dim]`
 - Load into `StreamingMultiQueryAttention.query/key/value` in that order.
-- For sinks parameters, export the learned vector per layer to shape `[kv_heads, groups]`.
+- For sinks parameters, export the learned matrix per layer to shape `[kv_heads, groups]` and map it to the module field path `layers.{L}.attn.sinks` when `learned_sinks` is enabled for that layer. Example 1:1 mapping:
+
+```rust
+use burn_extended::loader::load_safetensors_map;
+
+// Map GPT‑OSS sinks (block.L.attn.sinks) to burn-extended path (layers.L.attn.sinks)
+let mut mappings = Vec::new();
+for l in 0..num_layers {
+    mappings.push((
+        format!("block.{l}.attn.sinks"),
+        format!("layers.{l}.attn.sinks"),
+    ));
+}
+let res = load_safetensors_map(&mut model, std::path::Path::new("model.safetensors"), &mappings, /*from_pytorch*/ true, /*allow_partial*/ true, /*validate*/ false)?;
+assert!(res.is_success());
+```
 
 SwiGLU clamp
 - GPT‑OSS uses a clamped SwiGLU. Options:
@@ -105,3 +122,8 @@ assert!(result.is_success());
 Open items
 - Implement the exact decoder block (RMSNorm + SwiGLU clamp + residuals) and wire per‑layer sinks.
 - Provide a weight loader utility tailored to GPT‑OSS checkpoints.
+ALiBi bias with windows
+- Build slopes with `attention::alibi::alibi_slopes_tensor(n_heads, device)`.
+- For a chunk at absolute query start `q_start` and active key window starting at `k_start` with lengths `Tq`/`Tk`, create the bias:
+  `attention::alibi::alibi_bias_for_positions::<B>(batch, &slopes, Tq, Tk, q_start, k_start, device)`.
+- Pass as `attn_bias` to streaming attention; shapes must match the current active window `[B, n_heads, Tq, Tk]`.

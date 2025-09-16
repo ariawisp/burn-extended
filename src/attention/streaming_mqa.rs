@@ -24,6 +24,10 @@ pub struct StreamingMultiQueryAttentionConfig {
     /// Use quiet softmax instead of regular softmax.
     #[config(default = false)]
     pub quiet_softmax: bool,
+    /// If true, initialize a learnable sinks parameter stored inside the module
+    /// with shape `[kv_heads, groups]` where `groups = n_heads / kv_heads`.
+    #[config(default = false)]
+    pub learned_sinks: bool,
     /// Parameter initializer for linear layers.
     #[config(
         default = "Initializer::KaimingUniform{gain:1.0/num_traits::Float::sqrt(3.0), fan_out_only:false}"
@@ -55,8 +59,9 @@ pub struct StreamingMultiQueryAttention<B: Backend> {
     pub d_k: usize,
     /// Use quiet softmax.
     pub quiet_softmax: bool,
-    /// Optional learned sinks weight per head `[n_heads]`.
-    pub sinks_weight: Option<Tensor<B, 1>>,
+    /// Optional learnable sinks logits per (kv_head, group) pair: `[kv_heads, groups]`.
+    /// When present and no runtime sinks are provided, this parameter is used.
+    pub sinks: Option<burn::module::Param<Tensor<B, 2>>>,
 }
 
 impl<B: Backend> ModuleDisplay for StreamingMultiQueryAttention<B> {
@@ -109,7 +114,13 @@ impl StreamingMultiQueryAttentionConfig {
             kv_heads: self.num_key_value_heads,
             d_k,
             quiet_softmax: self.quiet_softmax,
-            sinks_weight: None,
+            sinks: if self.learned_sinks {
+                // Initialize to zeros; loader can overwrite with checkpoint values.
+                let groups = self.n_heads / self.num_key_value_heads;
+                Some(Initializer::Zeros.init::<B, 2, _>([self.num_key_value_heads, groups], device))
+            } else {
+                None
+            },
         }
     }
 }
@@ -379,10 +390,11 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
                 active_len,
                 self.quiet_softmax,
             )
-        } else if let Some(sinks) = self.sinks_weight.as_ref() {
+        } else if let Some(param) = self.sinks.as_ref() {
+            let sinks = param.val().clone().reshape([self.kv_heads * groups]); // [nH]
             crate::attention::apply_sinks_then_softmax(
                 attn_scores,
-                sinks.clone(), // [nH]
+                sinks,
                 batch_size,
                 self.n_heads,
                 seq_len,

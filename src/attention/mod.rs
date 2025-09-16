@@ -1,6 +1,7 @@
 pub mod cache_ops;
 pub mod core;
 pub mod cross;
+pub mod alibi;
 pub mod linear;
 pub mod mask1d;
 pub mod mqa;

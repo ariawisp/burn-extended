@@ -34,6 +34,40 @@ Diffusion schedulers and guidance
 - `retrieve_timesteps` lets you resample Diffusers-style schedules when mixing training/inference step counts.
 - Pair the scheduler output with guidance helpers: `cfg`/`cfg_double` for classic classifier-free guidance, `apg` with a `MomentumBuffer` for ACE-Step's momentum projection, and `cfg_zero_star` when projecting onto high-rank negative prompts.
 
+Scheduler parity (Flow‑Match Euler)
+- Use `diffusion::FlowMatchEulerConfig` to match ACE‑Step’s discrete scheduler:
+  - `shift`: apply `shift * s / (1 + (shift - 1) * s)` (default).
+  - `use_dynamic_shifting` + `time_shift_mu`: enable time‑shift `exp(mu) / (exp(mu) + (1/s - 1)^1)`.
+  - `sigma_max`: upper bound for initial sigma.
+  - `omega_lower/upper/x0/k`: logistic rescale of `omega` per step (default 0.9/1.1/0.0/0.1).
+  - `mean_center_update`: mimic ACE‑Step’s mean‑centered update: `dx = (σ_{i+1}-σ_i)*pred; m = mean(dx); centered = (dx-m)*ω + m`.
+
+Example
+```rust
+use burn_extended::diffusion::{FlowMatchEuler, FlowMatchEulerConfig, DiffusionPipeline};
+
+let cfg = FlowMatchEulerConfig {
+    num_train_timesteps: 1000,
+    shift: 1.0,
+    sigma_max: 1.0,
+    use_dynamic_shifting: false,
+    time_shift_mu: None,
+    omega_lower: 0.9,
+    omega_upper: 1.1,
+    omega_x0: 0.0,
+    omega_k: 0.1,
+    mean_center_update: true,
+};
+let mut sched = FlowMatchEuler::<B, 4>::new(cfg);
+// Optional: dynamic shift
+// sched.set_time_shift_mu(0.5);
+
+let mut pipe = DiffusionPipeline::new(sched);
+let result = pipe.run_cfg::<B, 4, _, _>(
+    sample, steps, predict_uncond, predict_cond, 15.0, /*omega*/ 1.0,
+);
+```
+
 Backend init and generation harness (sketch)
 ```rust
 use burn_wgpu::{Wgpu as B, WgpuDevice};

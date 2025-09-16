@@ -15,12 +15,9 @@ impl<S> DiffusionPipeline<S> {
     }
 }
 
-impl<S, B: Backend, const D: usize> DiffusionPipeline<S>
-where
-    S: DiffusionScheduler<B, D>,
-{
+impl<S> DiffusionPipeline<S> {
     /// Run with a single model prediction function: `predict(sample, timestep)`.
-    pub fn run_single<F>(
+    pub fn run_single<B: Backend, const D: usize, F>(
         &mut self,
         mut sample: Tensor<B, D>,
         num_steps: usize,
@@ -28,6 +25,7 @@ where
         omega: f32,
     ) -> Tensor<B, D>
     where
+        S: DiffusionScheduler<B, D>,
         F: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
     {
         let device = sample.device();
@@ -44,7 +42,7 @@ where
     }
 
     /// Run with classifier-free guidance: provide `predict_uncond` and `predict_cond`.
-    pub fn run_cfg<FU, FC>(
+    pub fn run_cfg<B: Backend, const D: usize, FU, FC>(
         &mut self,
         mut sample: Tensor<B, D>,
         num_steps: usize,
@@ -54,6 +52,7 @@ where
         omega: f32,
     ) -> Tensor<B, D>
     where
+        S: DiffusionScheduler<B, D>,
         FU: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
         FC: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
     {
@@ -73,7 +72,7 @@ where
     }
 
     /// Run with APG-like guidance; provide `predict_uncond` and `predict_cond`.
-    pub fn run_apg<FU, FC>(
+    pub fn run_apg<B: Backend, const D: usize, FU, FC>(
         &mut self,
         mut sample: Tensor<B, D>,
         num_steps: usize,
@@ -85,6 +84,7 @@ where
         omega: f32,
     ) -> Tensor<B, D>
     where
+        S: DiffusionScheduler<B, D>,
         FU: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
         FC: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
     {
@@ -105,7 +105,7 @@ where
     }
 
     /// Run with double CFG (e.g., text + lyric) guidance.
-    pub fn run_cfg_double<FU, FC, FO>(
+    pub fn run_cfg_double<B: Backend, const D: usize, FU, FC, FO>(
         &mut self,
         mut sample: Tensor<B, D>,
         num_steps: usize,
@@ -117,6 +117,7 @@ where
         omega: f32,
     ) -> Tensor<B, D>
     where
+        S: DiffusionScheduler<B, D>,
         FU: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
         FC: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
         FO: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
@@ -138,7 +139,7 @@ where
     }
 
     /// Run with zero-star variant guidance.
-    pub fn run_zero_star<FU, FC>(
+    pub fn run_zero_star<B: Backend, const D: usize, FU, FC>(
         &mut self,
         mut sample: Tensor<B, D>,
         num_steps: usize,
@@ -148,6 +149,7 @@ where
         omega: f32,
     ) -> Tensor<B, D>
     where
+        S: DiffusionScheduler<B, D>,
         FU: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
         FC: FnMut(Tensor<B, D>, f32) -> Tensor<B, D>,
     {
@@ -166,4 +168,3 @@ where
         sample
     }
 }
-
