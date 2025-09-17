@@ -29,6 +29,8 @@ anyhow = "1"
 openai_harmony = { package = "openai-harmony", path = "../harmony" }
 uuid = { version = "1", features = ["std", "fast-rng"] }
 half = { version = "2", features = ["std"] }
+memmap2 = "0.9"
+libc = "0.2"
 
 [features]
 default = ["std"]

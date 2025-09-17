@@ -3,10 +3,10 @@ use burn_core as burn;
 use burn::module::Module;
 use burn_store::{ApplyResult, ModuleSnapshot, TensorSnapshot};
 use burn_tensor::{DType, TensorData};
-use half::bf16;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use alloc::sync::Arc;
 
 type Result<T> = anyhow::Result<T>;
 
@@ -153,10 +153,11 @@ pub fn parse_modelbin(path: &Path) -> Result<ParsedModelBin> {
     parse_headers(&mut f)
 }
 
-pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clone>(
+pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clone + 'static>(
     model: &mut M,
     path: &Path,
     validate: bool,
+    skip_moe: bool,
 ) -> Result<ApplyResult> {
     use anyhow::Context;
     let mut f = File::open(path).with_context(|| format!("open {:?}", path))?;
@@ -168,6 +169,7 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     let n_heads = parsed.header.num_heads as usize;
     let kv_heads = parsed.header.num_kv_heads as usize;
     let head_dim = parsed.header.head_dim as usize;
+    let ffn_hidden = parsed.header.mlp_dim as usize;
 
     let mut snapshots: Vec<TensorSnapshot> = Vec::new();
 
@@ -239,23 +241,24 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
         snapshots.push(snapshot(&format!("layers.{l}.attn.key.bias"), tensor_from_bf16_bytes(kb, vec![kv_rows])));
         snapshots.push(snapshot(&format!("layers.{l}.attn.value.bias"), tensor_from_bf16_bytes(vb, vec![kv_rows])));
 
-        // sinks [n_heads] -> reshape done by module when loaded
+        // sinks stored as [n_heads], reshape to [kv_heads, groups]
         let cur = f.seek(SeekFrom::Current(0))?;
         let need = align_up(cur, 16);
         if need != cur { f.seek(SeekFrom::Start(need))?; }
         let mut sbuf = vec![0u8; n_heads * 2];
         read_exact(&mut f, &mut sbuf)?;
-        snapshots.push(snapshot(&format!("layers.{l}.attn.sinks"), tensor_from_bf16_bytes(sbuf, vec![n_heads])));
+        let groups = n_heads / kv_heads;
+        snapshots.push(snapshot(&format!("layers.{l}.attn.sinks"), tensor_from_bf16_bytes(sbuf, vec![kv_heads, groups])));
 
         // attn.out (w+b)
         let cur = f.seek(SeekFrom::Current(0))?;
         let need = align_up(cur, 16);
         if need != cur { f.seek(SeekFrom::Start(need))?; }
-        let mut ow = vec![0u8; d_model * d_model * 2];
+        let mut ow = vec![0u8; d_model * (n_heads * head_dim) * 2];
         read_exact(&mut f, &mut ow)?;
         let mut ob = vec![0u8; d_model * 2];
         read_exact(&mut f, &mut ob)?;
-        snapshots.push(snapshot(&format!("layers.{l}.attn.output.weight"), tensor_from_bf16_bytes(ow, vec![d_model, d_model])));
+        snapshots.push(snapshot(&format!("layers.{l}.attn.output.weight"), tensor_from_bf16_bytes(ow, vec![d_model, n_heads * head_dim])));
         snapshots.push(snapshot(&format!("layers.{l}.attn.output.bias"), tensor_from_bf16_bytes(ob, vec![d_model])));
 
         // mlp.norm.scale
@@ -295,11 +298,154 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     read_exact(&mut f, &mut uw)?;
     snapshots.push(snapshot("lm_head.weight", tensor_from_bf16_bytes(uw, vec![included_tokens, d_model])));
 
-    // Note: MoE expert weights follow; omitted in this initial reader.
+    // If MoE is skipped, apply non-MoE snapshots and return
+    if skip_moe {
+        let result = model.apply(snapshots);
+        if validate && !result.errors.is_empty() {
+            anyhow::bail!("Import errors: {:?}", result.errors);
+        }
+        return Ok(result);
+    }
 
+    let e = parsed.header.num_experts as usize;
+    let rows_mlp1 = 2 * ffn_hidden;
+    let cols_mlp1 = d_model;
+    let rows_mlp2 = d_model;
+    let cols_mlp2 = ffn_hidden;
+    let bpr_mlp1 = (cols_mlp1 + 1) / 2;
+    let bpr_mlp2 = (cols_mlp2 + 1) / 2;
+    let bytes_mlp1_blocks = rows_mlp1 * bpr_mlp1;
+    let bytes_mlp1_scales = rows_mlp1;
+    let bytes_mlp1_bias = rows_mlp1 * 2;
+    let bytes_mlp2_blocks = rows_mlp2 * bpr_mlp2;
+    let bytes_mlp2_scales = rows_mlp2;
+    let bytes_mlp2_bias = rows_mlp2 * 2;
+
+    // Build per-layer streaming indices for MoE quantized weights (mmap-friendly offsets).
+    let mut per_layer_expert_offsets: Vec<Vec<crate::moe::MoeExpertOffsets>> = Vec::with_capacity(n_layers);
+
+    for l in 0..n_layers {
+        // align 16KB before MoE layer payload
+        let cur = f.seek(SeekFrom::Current(0))?;
+        let need = align_up(cur, 16384);
+        if need != cur { f.seek(SeekFrom::Start(need))?; }
+        let mut layer_offsets: Vec<crate::moe::MoeExpertOffsets> = Vec::with_capacity(e);
+        // Accumulate biases resident (BF16) while indexing quantized payloads.
+        let mut mlp1_b_all = vec![0u8; e * bytes_mlp1_bias];
+        let mut mlp2_b_all = vec![0u8; e * bytes_mlp2_bias];
+
+        for ex in 0..e {
+            // mlp1 blocks
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mlp1_blocks_off = f.seek(SeekFrom::Current(0))?;
+            // skip blocks
+            f.seek(SeekFrom::Current(bytes_mlp1_blocks as i64))?;
+            // mlp1 scales
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mlp1_scales_off = f.seek(SeekFrom::Current(0))?;
+            f.seek(SeekFrom::Current(bytes_mlp1_scales as i64))?;
+            // mlp1 bias
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mut bb = vec![0u8; bytes_mlp1_bias];
+            read_exact(&mut f, &mut bb)?;
+            let offb = ex * bytes_mlp1_bias;
+            mlp1_b_all[offb..offb + bytes_mlp1_bias].copy_from_slice(&bb);
+
+            // mlp2 blocks
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mlp2_blocks_off = f.seek(SeekFrom::Current(0))?;
+            f.seek(SeekFrom::Current(bytes_mlp2_blocks as i64))?;
+            // mlp2 scales
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mlp2_scales_off = f.seek(SeekFrom::Current(0))?;
+            f.seek(SeekFrom::Current(bytes_mlp2_scales as i64))?;
+            // mlp2 bias
+            let cur = f.seek(SeekFrom::Current(0))?;
+            let need = align_up(cur, 16);
+            if need != cur { f.seek(SeekFrom::Start(need))?; }
+            let mut bb2 = vec![0u8; bytes_mlp2_bias];
+            read_exact(&mut f, &mut bb2)?;
+            let off2b = ex * bytes_mlp2_bias;
+            mlp2_b_all[off2b..off2b + bytes_mlp2_bias].copy_from_slice(&bb2);
+
+            layer_offsets.push(crate::moe::MoeExpertOffsets {
+                mlp1_blocks_off,
+                mlp1_scales_off,
+                mlp2_blocks_off,
+                mlp2_scales_off,
+            });
+        }
+        // Push biases only; quantized blocks/scales will be streamed from mmap
+        snapshots.push(snapshot(
+            &format!("layers.{l}.mlp.mlp1_bias"),
+            tensor_from_bf16_bytes(mlp1_b_all, vec![e, rows_mlp1]),
+        ));
+        snapshots.push(snapshot(
+            &format!("layers.{l}.mlp.mlp2_bias"),
+            tensor_from_bf16_bytes(mlp2_b_all, vec![e, rows_mlp2]),
+        ));
+        per_layer_expert_offsets.push(layer_offsets);
+    }
+
+    // Apply all non-MoE and bias parameters first
     let result = model.apply(snapshots);
     if validate && !result.errors.is_empty() {
         anyhow::bail!("Import errors: {:?}", result.errors);
     }
+    // Create mmap for the file and attach streaming contexts per layer if the model type supports it.
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&f)? };
+    // Advise random access to reduce readahead thrash on Apple/Linux
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    unsafe {
+        let ptr = mmap.as_ptr() as *mut core::ffi::c_void;
+        let len = mmap.len();
+        let _ = libc::madvise(ptr, len, libc::MADV_RANDOM);
+    }
+    let mmap_arc = Arc::new(mmap);
+
+    // Build contexts per layer
+    let mut contexts: Vec<Arc<crate::moe::MoeStreamingContext>> = Vec::with_capacity(n_layers);
+    for l in 0..n_layers {
+        let ctx = crate::moe::MoeStreamingContext {
+            mmap: mmap_arc.clone(),
+            experts: per_layer_expert_offsets[l].clone(),
+            rows_mlp1,
+            cols_mlp1,
+            rows_mlp2,
+            cols_mlp2,
+            ue8_offset: 14,
+        };
+        contexts.push(Arc::new(ctx));
+    }
+
+    // If M is our GPT-OSS model, attach contexts; otherwise ignore.
+    // We detect by downcasting via Any (Module doesn't expose RTTI), so expose a helper on the model instead.
+    // Use trait bounds: try to call a known method via specialization is not possible; fall back to a runtime trick using cfg(feature) is overkill.
+    // Instead, attempt to use public method via any: we define a trait locally and implement for model type.
+    attach_moe_streaming_contexts_if_supported(model, contexts);
+
     Ok(result)
+}
+
+// Helper: attach contexts to GPT-OSS model if the concrete type exposes the method.
+fn attach_moe_streaming_contexts_if_supported<B: burn::tensor::backend::Backend, M: Module<B> + Clone + 'static>(
+    model: &mut M,
+    contexts: Vec<Arc<crate::moe::MoeStreamingContext>>,
+) {
+    // Use Any downcast to GptOssModel if available without creating a direct dependency cycle.
+    use core::any::Any;
+    // Safety: Module<B> types are 'static here.
+    if let Some(m_any) = (model as &mut dyn Any).downcast_mut::<crate::models::gpt_oss::GptOssModel<B>>() {
+        m_any.set_moe_streaming_contexts(contexts);
+    }
 }

@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use burn::backend::wgpu::{self, Wgpu as B, WgpuDevice};
 use burn_extended::generate::{generate, GenerationConfig};
 use burn_extended::loader::modelbin::{load_modelbin_into, parse_modelbin};
@@ -17,27 +16,38 @@ struct Args {
     /// Path to model.bin
     #[arg(short = 'm', long = "model", value_name = "FILE")]
     model_path: PathBuf,
-    /// Hidden size (embedding_dim)
+    /// Hidden size (embedding_dim) override; if omitted, uses header
     #[arg(long = "d_model")]
-    d_model: usize,
-    /// Number of layers
+    d_model: Option<usize>,
+    /// Number of layers override; if omitted, uses header
     #[arg(long = "n_layers")]
-    n_layers: usize,
-    /// Number of heads
+    n_layers: Option<usize>,
+    /// Number of heads override; if omitted, uses header
     #[arg(long = "n_heads")]
-    n_heads: usize,
-    /// Number of KV heads
+    n_heads: Option<usize>,
+    /// Number of KV heads override; if omitted, uses header
     #[arg(long = "kv_heads")]
-    kv_heads: usize,
-    /// FFN hidden size
+    kv_heads: Option<usize>,
+    /// FFN hidden size override; if omitted, uses header
     #[arg(long = "ffn_hidden")]
-    ffn_hidden: usize,
-    /// Number of experts
+    ffn_hidden: Option<usize>,
+    /// Number of experts override; if omitted, uses header
     #[arg(long = "num_experts")]
-    num_experts: usize,
-    /// Vocabulary size (included tokens)
+    num_experts: Option<usize>,
+    /// Vocabulary size (included tokens) override; if omitted, uses header
     #[arg(long = "vocab")]
-    vocab: usize,
+    vocab: Option<usize>,
+    /// Prefer a consistent runtime config where d_model == n_heads * head_dim
+    /// If this conflicts with the header's embedding_dim, the run will abort unless --ignore_config_mismatch is set.
+    #[arg(long = "prefer_consistent", default_value_t = false)]
+    prefer_consistent: bool,
+    /// Ignore header/config mismatch checks (unsafe). When set, we proceed using header sizes for loading and runtime
+    /// config values for model initialization. This may fail to apply or crash if shapes do not match.
+    #[arg(long = "ignore_config_mismatch", default_value_t = false)]
+    ignore_config_mismatch: bool,
+    /// Disable MoE loading and execution to reduce memory usage
+    #[arg(long = "no_moe", default_value_t = false)]
+    no_moe: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,20 +58,50 @@ fn main() -> anyhow::Result<()> {
     // If args look like zero/placeholder, derive from model.bin header
     let parsed = parse_modelbin(&args.model_path)?;
     let included_tokens = (parsed.tokenizer.num_text + parsed.tokenizer.num_special) as usize;
+    let mut hdr_d_model = parsed.header.embedding_dim as usize;
+    let mut hdr_n_heads = parsed.header.num_heads as usize;
+    let hdr_head_dim = parsed.header.head_dim as usize;
+    let derived_d_model = hdr_n_heads * hdr_head_dim;
+
+    // Apply CLI overrides for core dims if provided
+    if let Some(nh) = args.n_heads { hdr_n_heads = nh; }
+    if let Some(dm) = args.d_model { hdr_d_model = dm; }
+
+    // Choose d_model per user preference (default uses header)
+    let runtime_d_model = if args.prefer_consistent { derived_d_model } else { hdr_d_model };
+    let mismatch = hdr_d_model != derived_d_model;
+    if mismatch {
+        eprintln!(
+            "[modelbin_infer] Header mismatch: embedding_dim={} vs n_heads*head_dim={} ({}*{})",
+            hdr_d_model, derived_d_model, parsed.header.num_heads, parsed.header.head_dim
+        );
+        if args.prefer_consistent {
+            eprintln!("[modelbin_infer] prefer_consistent selected, but loader uses header sizes. Aborting to avoid shape mismatch.");
+            if !args.ignore_config_mismatch {
+                anyhow::bail!("prefer_consistent not supported when header sizes differ; rerun without --prefer_consistent or with --ignore_config_mismatch (unsafe)");
+            }
+        } else if !args.ignore_config_mismatch {
+            eprintln!("[modelbin_infer] Proceeding with header sizes for both loading and runtime config. Use --prefer_consistent to pick derived dims (may fail).\n");
+        }
+    }
+
     let cfg = GptOssConfig {
-        vocab_size: if args.vocab > 0 { args.vocab } else { included_tokens },
-        d_model: if args.d_model > 0 { args.d_model } else { parsed.header.embedding_dim as usize },
-        n_layers: if args.n_layers > 0 { args.n_layers } else { parsed.header.num_blocks as usize },
-        n_heads: if args.n_heads > 0 { args.n_heads } else { parsed.header.num_heads as usize },
-        kv_heads: if args.kv_heads > 0 { args.kv_heads } else { parsed.header.num_kv_heads as usize },
-        ffn_hidden: if args.ffn_hidden > 0 { args.ffn_hidden } else { parsed.header.mlp_dim as usize },
-        num_experts: if args.num_experts > 0 { args.num_experts } else { parsed.header.num_experts as usize },
+        vocab_size: args.vocab.unwrap_or(included_tokens),
+        d_model: runtime_d_model,
+        n_layers: args.n_layers.unwrap_or(parsed.header.num_blocks as usize),
+        n_heads: hdr_n_heads,
+        head_dim: hdr_head_dim,
+        kv_heads: args.kv_heads.unwrap_or(parsed.header.num_kv_heads as usize),
+        ffn_hidden: args.ffn_hidden.unwrap_or(parsed.header.mlp_dim as usize),
+        num_experts: args.num_experts.unwrap_or(parsed.header.num_experts as usize),
         ..Default::default()
     };
+    let mut cfg = cfg;
+    if args.no_moe { cfg.disable_moe = true; }
     let mut model: GptOssModel<B> = cfg.init::<B>(&device);
 
     // Load weights from model.bin
-    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false)?;
+    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false, /*skip_moe*/ args.no_moe)?;
 
     // Harmony prompt
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)?;
@@ -73,7 +113,7 @@ fn main() -> anyhow::Result<()> {
 
     // Generation
     let prompts = vec![prefill.into_iter().map(|r| r as usize).collect::<Vec<_>>()];
-    let gen_cfg = GenerationConfig { max_new_tokens: 16, eos_token: eos.map(|v| v as usize), ..Default::default() };
+    let gen_cfg = GenerationConfig { max_new_tokens: 16, eos_token: eos.map(|v| v as usize), sampler: burn_extended::sampling::SamplerConfig { temperature: 0.0, top_k: None, repetition_penalty: None, frequency_penalty: None, presence_penalty: None }, ..Default::default() };
     let outputs = generate::<B, _>(&model, &device, &prompts, gen_cfg);
     println!("modelbin infer output lens: {:?}", outputs.iter().map(|t| t.len()).collect::<Vec<_>>());
     Ok(())

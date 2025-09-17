@@ -7,7 +7,7 @@ use burn::backend::wgpu::{self, Wgpu as B, WgpuDevice};
 use burn_extended::attention::AttnWindow;
 use burn_extended::generate::{generate, GenerationConfig};
 use burn_extended::loader::{
-    build_gptoss_qkv_splits, load_gptoss_moe, load_safetensors_qkv_split, load_gptoss_sinks,
+    build_gptoss_qkv_splits, load_gptoss_moe, load_safetensors_qkv_split, load_gptoss_sinks, load_gptoss_lm_head,
 };
 use burn_extended::models::gpt_oss::GptOssModel;
 use burn_extended::models::gpt_oss::GptOssConfig;
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     let mut model: GptOssModel<B> = cfg.init::<B>(&device);
 
     // Load weights: QKV + sinks
-    let head_dim = cfg.d_model / cfg.n_heads;
+    let head_dim = cfg.head_dim;
     let splits = build_gptoss_qkv_splits(cfg.n_layers, cfg.n_heads, cfg.kv_heads, head_dim);
     let _ = load_safetensors_qkv_split::<B, _>(
         &mut model,
@@ -62,6 +62,8 @@ fn main() -> anyhow::Result<()> {
         true,
         false,
     )?;
+    // Map lm_head without PyTorch adapter to match model.bin orientation
+    let _ = load_gptoss_lm_head::<B, _>(&mut model, &ckpt_path, true, false)?;
 
     // Harmony prompt
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)?;

@@ -10,6 +10,7 @@ struct GptOssJsonConfig {
     pub hidden_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
+    pub head_dim: usize,
     pub num_key_value_heads: usize,
     pub intermediate_size: usize,
     pub num_experts: usize,
@@ -32,18 +33,19 @@ impl GptOssConfig {
         let cfg: GptOssJsonConfig = serde_json::from_str(&data)?;
         let d_model = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
-        anyhow::ensure!(d_model % n_heads == 0, "d_model must divide n_heads");
-        let head_dim = d_model / n_heads;
+        let head_dim = cfg.head_dim;
         anyhow::ensure!(head_dim % 2 == 0, "head_dim must be even for RoPE (got {head_dim})");
         Ok(GptOssConfig {
             vocab_size: cfg.vocab_size,
             d_model,
             n_layers: cfg.num_hidden_layers,
             n_heads,
+            head_dim,
             kv_heads: cfg.num_key_value_heads,
             ffn_hidden: cfg.intermediate_size,
             num_experts: cfg.num_experts,
             experts_per_token: cfg.experts_per_token.unwrap_or(4),
+            disable_moe: false,
             dropout: 0.0,
             swiglu_alpha: 1.0,
             swiglu_limit: cfg.swiglu_limit.unwrap_or(7.0),

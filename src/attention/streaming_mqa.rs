@@ -18,6 +18,8 @@ pub struct StreamingMultiQueryAttentionConfig {
     pub n_heads: usize,
     /// Number of shared key/value heads.
     pub num_key_value_heads: usize,
+    /// Per-head dimension for attention (decoupled from d_model).
+    pub head_dim: usize,
     /// Dropout probability on attention logits.
     #[config(default = 0.0)]
     pub dropout: f64,
@@ -28,6 +30,9 @@ pub struct StreamingMultiQueryAttentionConfig {
     /// with shape `[kv_heads, groups]` where `groups = n_heads / kv_heads`.
     #[config(default = false)]
     pub learned_sinks: bool,
+    /// If true, assume Q and K projections are pre-scaled; skip the 1/sqrt(d_k) factor.
+    #[config(default = false)]
+    pub pre_scaled_qk: bool,
     /// Parameter initializer for linear layers.
     #[config(
         default = "Initializer::KaimingUniform{gain:1.0/num_traits::Float::sqrt(3.0), fan_out_only:false}"
@@ -62,6 +67,8 @@ pub struct StreamingMultiQueryAttention<B: Backend> {
     /// Optional learnable sinks logits per (kv_head, group) pair: `[kv_heads, groups]`.
     /// When present and no runtime sinks are provided, this parameter is used.
     pub sinks: Option<burn::module::Param<Tensor<B, 2>>>,
+    /// Skip 1/sqrt(d_k) scaling in attention scores because Q,K are pre-scaled.
+    pub pre_scaled_qk: bool,
 }
 
 impl<B: Backend> ModuleDisplay for StreamingMultiQueryAttention<B> {
@@ -87,15 +94,11 @@ impl StreamingMultiQueryAttentionConfig {
     /// Initialize a new streaming MQA module.
     pub fn init<B: Backend>(&self, device: &B::Device) -> StreamingMultiQueryAttention<B> {
         assert!(
-            self.d_model % self.n_heads == 0,
-            "d_model must be divisible by n_heads"
-        );
-        assert!(
             self.n_heads % self.num_key_value_heads == 0,
             "n_heads must be divisible by num_key_value_heads"
         );
-
-        let d_k = self.d_model / self.n_heads;
+        assert!(self.head_dim > 0, "head_dim must be > 0");
+        let d_k = self.head_dim;
 
         let linear = |in_features, out_features| {
             LinearConfig::new(in_features, out_features)
@@ -104,10 +107,10 @@ impl StreamingMultiQueryAttentionConfig {
         };
 
         StreamingMultiQueryAttention {
-            query: linear(self.d_model, self.d_model),
+            query: linear(self.d_model, self.n_heads * d_k),
             key: linear(self.d_model, self.num_key_value_heads * d_k),
             value: linear(self.d_model, self.num_key_value_heads * d_k),
-            output: linear(self.d_model, self.d_model),
+            output: linear(self.n_heads * d_k, self.d_model),
             dropout: DropoutConfig::new(self.dropout).init(),
             d_model: self.d_model,
             n_heads: self.n_heads,
@@ -121,6 +124,7 @@ impl StreamingMultiQueryAttentionConfig {
             } else {
                 None
             },
+            pre_scaled_qk: self.pre_scaled_qk,
         }
     }
 }
@@ -254,12 +258,32 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
 
         // Optionally apply RoPE with offset to Q and K (last two dims are [heads, d_k]).
         let (q, k) = if let Some(rope) = params.rope {
-            debug_assert!(self.d_k % 2 == 0, "RoPE requires even head_dim");
             // reshape to [B, T, heads, d_k] for rope apply along sequence
             let q_rs = q.swap_dims(1, 2); // [B, T, nH, d_k]
             let k_rs = k.swap_dims(1, 2); // [B, T, kvH, d_k]
-            let q_ro = rope.apply(q_rs, params.start_pos);
-            let k_ro = rope.apply(k_rs, params.start_pos);
+
+            // If d_k is odd, rotate only the largest even slice of the last dim and keep the tail unchanged.
+            let rope_width = self.d_k & !1usize; // round down to even
+            let apply_rope = |xs: Tensor<B, 4>| {
+                if rope_width == 0 {
+                    xs
+                } else if rope_width == self.d_k {
+                    rope.apply(xs, params.start_pos)
+                } else {
+                    let dims = xs.dims();
+                    let head = xs
+                        .clone()
+                        .slice([0..dims[0], 0..dims[1], 0..dims[2], 0..rope_width]);
+                    let tail = xs
+                        .clone()
+                        .slice([0..dims[0], 0..dims[1], 0..dims[2], rope_width..self.d_k]);
+                    let head_ro = rope.apply(head, params.start_pos);
+                    Tensor::cat(vec![head_ro, tail], 3)
+                }
+            };
+
+            let q_ro = apply_rope(q_rs);
+            let k_ro = apply_rope(k_rs);
             (q_ro.swap_dims(1, 2), k_ro.swap_dims(1, 2))
         } else {
             (q, k)
@@ -369,7 +393,8 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         ]);
 
         // Attention
-        let mut attn_scores = crate::attention::compute_scores(q, k_exp, self.d_k, &self.dropout);
+        let scale_dk = if self.pre_scaled_qk { 1 } else { self.d_k };
+        let mut attn_scores = crate::attention::compute_scores(q, k_exp, scale_dk, &self.dropout);
 
         // Additive attention bias (already shaped to window)
         if let Some(bias) = params.attn_bias {
@@ -406,10 +431,10 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         };
 
         let context = weights.matmul(v_exp);
-        // [B, nH, Tq, d_k] -> [B, Tq, nH, d_k] -> [B, Tq, d_model]
+        // [B, nH, Tq, d_k] -> [B, Tq, nH*d_k]
         let context = context
             .swap_dims(1, 2)
-            .reshape([batch_size, seq_len, self.d_model]);
+            .reshape([batch_size, seq_len, self.n_heads * self.d_k]);
         self.output.forward(context)
     }
 
@@ -427,5 +452,146 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             .forward(x)
             .reshape([batch_size, seq_length, self.kv_heads, self.d_k])
             .swap_dims(1, 2)
+    }
+
+    pub fn debug_get_sinks(&self) -> Option<Tensor<B, 2>> {
+        self.sinks.as_ref().map(|p| p.val().clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn debug_attn_weights(
+        &self,
+        x: Tensor<B, 3>,
+        cache: &mut StreamingMqaCache<B>,
+        params: StreamingMqaParams<B>,
+    ) -> Tensor<B, 4> {
+        let [batch_size, seq_len, _] = x.dims();
+        let groups = self.n_heads / self.kv_heads;
+        let q = self.attention_linear_q(x.clone(), &self.query);
+        let k = self.attention_linear_kv(x.clone(), &self.key);
+        let v = self.attention_linear_kv(x, &self.value);
+
+        let (q, k) = if let Some(rope) = params.rope {
+            let q_rs = q.swap_dims(1, 2);
+            let k_rs = k.swap_dims(1, 2);
+            let rope_width = self.d_k & !1usize;
+            let apply_rope = |xs: Tensor<B, 4>| {
+                if rope_width == 0 {
+                    xs
+                } else if rope_width == self.d_k {
+                    rope.apply(xs, params.start_pos)
+                } else {
+                    let dims = xs.dims();
+                    let head = xs
+                        .clone()
+                        .slice([0..dims[0], 0..dims[1], 0..dims[2], 0..rope_width]);
+                    let tail = xs
+                        .clone()
+                        .slice([0..dims[0], 0..dims[1], 0..dims[2], rope_width..self.d_k]);
+                    let head_ro = rope.apply(head, params.start_pos);
+                    Tensor::cat(vec![head_ro, tail], 3)
+                }
+            };
+            let q_ro = apply_rope(q_rs);
+            let k_ro = apply_rope(k_rs);
+            (q_ro.swap_dims(1, 2), k_ro.swap_dims(1, 2))
+        } else {
+            (q, k)
+        };
+
+        // Update cache
+        let num_new = seq_len;
+        let current_end = params.start_pos + num_new;
+        let sink = cache.sink_tokens;
+        let cap = cache.cache_len;
+        let delta = current_end.saturating_sub(cache.global_end_index);
+        let need = cache.local_end_index + delta;
+        if need > cap {
+            let num_evicted = need - cap;
+            crate::attention::evict_and_roll_mqa(cache, batch_size, self.kv_heads, self.d_k, sink, num_evicted);
+            cache.local_end_index += delta;
+        } else {
+            cache.local_end_index += delta;
+        }
+        let local_end = cache.local_end_index;
+        let local_start = local_end - num_new;
+        let k_rs = k.swap_dims(1, 2);
+        let v_rs = v.swap_dims(1, 2);
+        cache.k.inplace(|t| {
+            t.slice_assign([0..batch_size, local_start..local_end, 0..self.kv_heads, 0..self.d_k], k_rs)
+        });
+        cache.v.inplace(|t| {
+            t.slice_assign([0..batch_size, local_start..local_end, 0..self.kv_heads, 0..self.d_k], v_rs)
+        });
+        cache.global_end_index = current_end;
+
+        // Window
+        let active_len = match params.window {
+            AttnWindow::Full => local_end,
+            AttnWindow::Window(w) => sink + w.min(local_end.saturating_sub(sink)),
+        };
+        let start = local_end.saturating_sub(active_len);
+        let k_win = cache.k.clone().slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k]).swap_dims(1, 2);
+        let v_win = cache.v.clone().slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k]).swap_dims(1, 2);
+        let k_exp = k_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([batch_size, self.n_heads, active_len, self.d_k]);
+        let _v_exp = v_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([batch_size, self.n_heads, active_len, self.d_k]);
+        let scale_dk = if self.pre_scaled_qk { 1 } else { self.d_k };
+        let mut attn_scores = crate::attention::compute_scores(q, k_exp, scale_dk, &self.dropout);
+        // Append sinks and softmax
+        let weights = if let Some(param) = self.sinks.as_ref() {
+            let sinks = param.val().clone().reshape([self.kv_heads * groups]);
+            crate::attention::apply_sinks_then_softmax(attn_scores, sinks, batch_size, self.n_heads, seq_len, active_len, self.quiet_softmax)
+        } else {
+            crate::attention::apply_bias_and_softmax(attn_scores, None, self.quiet_softmax)
+        };
+        weights
+    }
+
+    #[allow(dead_code)]
+    pub fn debug_attn_scores(
+        &self,
+        x: Tensor<B, 3>,
+        cache: &mut StreamingMqaCache<B>,
+        params: StreamingMqaParams<B>,
+    ) -> Tensor<B, 4> {
+        let [batch_size, seq_len, _] = x.dims();
+        let groups = self.n_heads / self.kv_heads;
+        let q = self.attention_linear_q(x.clone(), &self.query);
+        let k = self.attention_linear_kv(x.clone(), &self.key);
+        let (q, k) = if let Some(rope) = params.rope {
+            let q_rs = q.swap_dims(1, 2);
+            let k_rs = k.swap_dims(1, 2);
+            let rope_width = self.d_k & !1usize;
+            let apply_rope = |xs: Tensor<B, 4>| {
+                if rope_width == 0 { xs } else if rope_width == self.d_k { rope.apply(xs, params.start_pos) } else {
+                    let dims = xs.dims();
+                    let head = xs.clone().slice([0..dims[0], 0..dims[1], 0..dims[2], 0..rope_width]);
+                    let tail = xs.clone().slice([0..dims[0], 0..dims[1], 0..dims[2], rope_width..self.d_k]);
+                    let head_ro = rope.apply(head, params.start_pos);
+                    Tensor::cat(vec![head_ro, tail], 3)
+                }
+            };
+            let q_ro = apply_rope(q_rs);
+            let k_ro = apply_rope(k_rs);
+            (q_ro.swap_dims(1, 2), k_ro.swap_dims(1, 2))
+        } else { (q, k) };
+        // Update cache and expand K
+        let num_new = seq_len;
+        let current_end = params.start_pos + num_new;
+        let sink = cache.sink_tokens;
+        let cap = cache.cache_len;
+        let delta = current_end.saturating_sub(cache.global_end_index);
+        let need = cache.local_end_index + delta;
+        if need > cap { let num_evicted = need - cap; crate::attention::evict_and_roll_mqa(cache, batch_size, self.kv_heads, self.d_k, sink, num_evicted); cache.local_end_index += delta; } else { cache.local_end_index += delta; }
+        let local_end = cache.local_end_index; let local_start = local_end - num_new;
+        let k_rs = k.swap_dims(1, 2);
+        cache.k.inplace(|t| { t.slice_assign([0..batch_size, local_start..local_end, 0..self.kv_heads, 0..self.d_k], k_rs) });
+        cache.global_end_index = current_end;
+        let active_len = match params.window { AttnWindow::Full => local_end, AttnWindow::Window(w) => sink + w.min(local_end.saturating_sub(sink)) };
+        let start = local_end.saturating_sub(active_len);
+        let k_win = cache.k.clone().slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k]).swap_dims(1, 2);
+        let k_exp = k_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([batch_size, self.n_heads, active_len, self.d_k]);
+        let scale_dk = if self.pre_scaled_qk { 1 } else { self.d_k };
+        crate::attention::compute_scores(q, k_exp, scale_dk, &self.dropout)
     }
 }

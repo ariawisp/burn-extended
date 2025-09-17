@@ -189,7 +189,7 @@ fn main() -> Result<()> {
             read_exact(&mut f, &mut pad)?;
             off = need;
         }
-        let out_w = emb_dim * emb_dim * 2;
+        let out_w = emb_dim * (num_heads as u64 * head_dim as u64) * 2;
         let out_b = emb_dim * 2;
         f.seek(SeekFrom::Current((out_w + out_b) as i64))?;
         println!("[verify] L{l}: attn.out (w+b) offset={}, size={}B", off, out_w + out_b);
