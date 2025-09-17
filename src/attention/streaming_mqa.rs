@@ -392,50 +392,46 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             self.d_k,
         ]);
 
-        // Attention
+        // Attention — compute in small q-tiles to bound memory.
         let scale_dk = if self.pre_scaled_qk { 1 } else { self.d_k };
-        let mut attn_scores = crate::attention::compute_scores(q, k_exp, scale_dk, &self.dropout);
-
-        // Additive attention bias (already shaped to window)
-        if let Some(bias) = params.attn_bias {
-            // bias is a reference; dereference to add
-            // Clone bias to avoid moving the referenced tensor
-            attn_scores = attn_scores + bias.clone();
-        }
-
-        // Optional sinks bias: append as a sentinel column and then discard after softmax.
-        let weights = if let Some(sinks) = params.sinks {
-            let sinks = sinks.clone().reshape([self.kv_heads * groups]); // [nH]
-            crate::attention::apply_sinks_then_softmax(
-                attn_scores,
-                sinks,
-                batch_size,
-                self.n_heads,
-                seq_len,
-                active_len,
-                self.quiet_softmax,
-            )
+        let mut out = Tensor::<B, 3>::zeros([batch_size, seq_len, self.n_heads * self.d_k], &q.device());
+        let tile_q = 16usize;
+        let sinks_vec = if let Some(s) = params.sinks {
+            Some(s.clone().reshape([self.kv_heads * groups]))
         } else if let Some(param) = self.sinks.as_ref() {
-            let sinks = param.val().clone().reshape([self.kv_heads * groups]); // [nH]
-            crate::attention::apply_sinks_then_softmax(
-                attn_scores,
-                sinks,
-                batch_size,
-                self.n_heads,
-                seq_len,
-                active_len,
-                self.quiet_softmax,
-            )
+            Some(param.val().clone().reshape([self.kv_heads * groups]))
         } else {
-            crate::attention::apply_bias_and_softmax(attn_scores, None, self.quiet_softmax)
+            None
         };
-
-        let context = weights.matmul(v_exp);
-        // [B, nH, Tq, d_k] -> [B, Tq, nH*d_k]
-        let context = context
-            .swap_dims(1, 2)
-            .reshape([batch_size, seq_len, self.n_heads * self.d_k]);
-        self.output.forward(context)
+        let mut start_q = 0usize;
+        while start_q < seq_len {
+            let take_q = core::cmp::min(tile_q, seq_len - start_q);
+            let q_tile = q.clone().slice([0..batch_size, 0..self.n_heads, start_q..start_q + take_q, 0..self.d_k]);
+            let mut scores = crate::attention::compute_scores(q_tile, k_exp.clone(), scale_dk, &self.dropout);
+            if let Some(bias_ref) = params.attn_bias.as_ref() {
+                let bias_full = (*bias_ref).clone();
+                let bias_tile = bias_full.slice([0..batch_size, 0..self.n_heads, start_q..start_q + take_q, 0..active_len]);
+                scores = scores + bias_tile;
+            }
+            let weights_tile = if let Some(sinks) = sinks_vec.as_ref() {
+                crate::attention::apply_sinks_then_softmax(
+                    scores,
+                    sinks.clone(),
+                    batch_size,
+                    self.n_heads,
+                    take_q,
+                    active_len,
+                    self.quiet_softmax,
+                )
+            } else {
+                crate::attention::apply_bias_and_softmax(scores, None, self.quiet_softmax)
+            };
+            let ctx_tile = weights_tile.matmul(v_exp.clone()); // [B, nH, tq, d_k]
+            let ctx_tile = ctx_tile.swap_dims(1, 2).reshape([batch_size, take_q, self.n_heads * self.d_k]);
+            out.inplace(|t| t.slice_assign([0..batch_size, start_q..start_q + take_q, 0..self.n_heads * self.d_k], ctx_tile.clone()));
+            start_q += take_q;
+        }
+        self.output.forward(out)
     }
 
     fn attention_linear_q(&self, x: Tensor<B, 3>, linear: &Linear<B>) -> Tensor<B, 4> {
@@ -531,20 +527,51 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
             AttnWindow::Window(w) => sink + w.min(local_end.saturating_sub(sink)),
         };
         let start = local_end.saturating_sub(active_len);
-        let k_win = cache.k.clone().slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k]).swap_dims(1, 2);
-        let v_win = cache.v.clone().slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k]).swap_dims(1, 2);
-        let k_exp = k_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([batch_size, self.n_heads, active_len, self.d_k]);
-        let _v_exp = v_win.unsqueeze_dim::<5>(2).repeat_dim(2, groups).reshape([batch_size, self.n_heads, active_len, self.d_k]);
+        let k_win = cache
+            .k
+            .clone()
+            .slice([0..batch_size, start..local_end, 0..self.kv_heads, 0..self.d_k])
+            .swap_dims(1, 2); // [B, kvH, Tk, d]
+        // v_win not required for weights-only path
+
+        // Compute attention weights in small q-tiles per group (avoid head expansion).
         let scale_dk = if self.pre_scaled_qk { 1 } else { self.d_k };
-        let mut attn_scores = crate::attention::compute_scores(q, k_exp, scale_dk, &self.dropout);
-        // Append sinks and softmax
-        let weights = if let Some(param) = self.sinks.as_ref() {
-            let sinks = param.val().clone().reshape([self.kv_heads * groups]);
-            crate::attention::apply_sinks_then_softmax(attn_scores, sinks, batch_size, self.n_heads, seq_len, active_len, self.quiet_softmax)
-        } else {
-            crate::attention::apply_bias_and_softmax(attn_scores, None, self.quiet_softmax)
-        };
-        weights
+        let tile_q = 16usize;
+        let mut weights_out = Tensor::<B, 4>::zeros(
+            [batch_size, self.n_heads, seq_len, active_len],
+            &q.device(),
+        );
+        let mut start_q = 0usize;
+        while start_q < seq_len {
+            let take_q = core::cmp::min(tile_q, seq_len - start_q);
+            let mut wts_tile_all = Tensor::<B, 4>::zeros(
+                [batch_size, self.n_heads, take_q, active_len],
+                &q.device(),
+            );
+            for g in 0..groups {
+                let h0 = g * self.kv_heads;
+                let h1 = h0 + self.kv_heads;
+                let q_g = q
+                    .clone()
+                    .slice([0..batch_size, h0..h1, start_q..start_q + take_q, 0..self.d_k]);
+                let scores_g = crate::attention::compute_scores(q_g, k_win.clone(), scale_dk, &self.dropout);
+                let weights_g = crate::attention::apply_bias_and_softmax(scores_g, None, self.quiet_softmax);
+                wts_tile_all.inplace(|t| {
+                    t.slice_assign(
+                        [0..batch_size, h0..h1, 0..take_q, 0..active_len],
+                        weights_g.clone(),
+                    )
+                });
+            }
+            weights_out.inplace(|t| {
+                t.slice_assign(
+                    [0..batch_size, 0..self.n_heads, start_q..start_q + take_q, 0..active_len],
+                    wts_tile_all.clone(),
+                )
+            });
+            start_q += take_q;
+        }
+        weights_out
     }
 
     #[allow(dead_code)]

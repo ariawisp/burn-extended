@@ -60,6 +60,8 @@ pub fn generate<B: Backend, M: AutoregressiveModel<B>>(
     let mut cache = model.init_cache(b, device);
     let mut start_pos = tokens[0].len();
 
+    // Single prefill call: build full input and update cache once to avoid repeated large allocations.
+
     for _step in 0..cfg.max_new_tokens {
         // Build tokens tensor [B, T]
         let max_t = tokens.iter().map(|t| t.len()).max().unwrap_or(0);

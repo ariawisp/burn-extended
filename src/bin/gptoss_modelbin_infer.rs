@@ -45,9 +45,6 @@ struct Args {
     /// config values for model initialization. This may fail to apply or crash if shapes do not match.
     #[arg(long = "ignore_config_mismatch", default_value_t = false)]
     ignore_config_mismatch: bool,
-    /// Disable MoE loading and execution to reduce memory usage
-    #[arg(long = "no_moe", default_value_t = false)]
-    no_moe: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,17 +69,9 @@ fn main() -> anyhow::Result<()> {
     let mismatch = hdr_d_model != derived_d_model;
     if mismatch {
         eprintln!(
-            "[modelbin_infer] Header mismatch: embedding_dim={} vs n_heads*head_dim={} ({}*{})",
+            "[modelbin_infer] Decoupled dims: embedding_dim={} vs n_heads*head_dim={} ({}*{}). Using header sizes; this is expected for GPT-OSS.",
             hdr_d_model, derived_d_model, parsed.header.num_heads, parsed.header.head_dim
         );
-        if args.prefer_consistent {
-            eprintln!("[modelbin_infer] prefer_consistent selected, but loader uses header sizes. Aborting to avoid shape mismatch.");
-            if !args.ignore_config_mismatch {
-                anyhow::bail!("prefer_consistent not supported when header sizes differ; rerun without --prefer_consistent or with --ignore_config_mismatch (unsafe)");
-            }
-        } else if !args.ignore_config_mismatch {
-            eprintln!("[modelbin_infer] Proceeding with header sizes for both loading and runtime config. Use --prefer_consistent to pick derived dims (may fail).\n");
-        }
     }
 
     let cfg = GptOssConfig {
@@ -97,11 +86,15 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     let mut cfg = cfg;
-    if args.no_moe { cfg.disable_moe = true; }
+    // Enforce header sliding window policy: even layers windowed, odd layers full (match Metal)
+    cfg.window_policy = burn_extended::cache::WindowPolicy::EveryOther {
+        window: parsed.header.attention_window as usize,
+        full_on_even: false,
+    };
     let mut model: GptOssModel<B> = cfg.init::<B>(&device);
 
     // Load weights from model.bin
-    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false, /*skip_moe*/ args.no_moe)?;
+    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false, /*skip_moe*/ false)?;
 
     // Harmony prompt
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)?;

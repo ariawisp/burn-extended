@@ -202,32 +202,61 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
         window: AttnWindow,
     ) -> Tensor<B, 2> {
         let [b, t] = tokens.dims();
-        let mut hidden = self.tok_emb.forward(tokens);
-        // Forward through layers with streaming MQA
-        for (l, layer) in self.layers.iter().enumerate() {
-            let policy_win = self.cfg.0.window_policy.window_for(l);
-            let layer_window = crate::cache::combine_windows(window, policy_win);
-            let state = crate::generate::runner::StreamState {
-                start_pos,
-                window: layer_window,
-            };
-            let params = StreamingMqaParams {
-                rope: Some(&self.rope),
-                start_pos: state.start_pos,
-                window: state.window,
-                sinks: None,
-                attn_bias: None,
-            };
-            let cache_l = cache.cache_mut(l);
-            hidden = layer.forward(hidden, cache_l, params);
+        let tile_q = 16usize;
+        let decode_only_last = cache.caches.first().map(|c| c.len() > 0).unwrap_or(false);
+
+        if decode_only_last {
+            // Decode step: process only the last token through all layers
+            let toks_last = tokens.clone().slice([0..b, t - 1..t]); // [B,1]
+            let mut hidden = self.tok_emb.forward(toks_last); // [B,1,d]
+            for (l, layer) in self.layers.iter().enumerate() {
+                let policy_win = self.cfg.0.window_policy.window_for(l);
+                let layer_window = crate::cache::combine_windows(window, policy_win);
+                let cache_l = cache.cache_mut(l);
+                let params = StreamingMqaParams {
+                    rope: Some(&self.rope),
+                    start_pos: start_pos + (t - 1),
+                    window: layer_window,
+                    sinks: None,
+                    attn_bias: None,
+                };
+                hidden = layer.forward(hidden, cache_l, params); // [B,1,d]
+            }
+            let hidden = self.norm_final.forward(hidden); // [B,1,d]
+            let logits = self.lm_head.forward(hidden); // [B,1,V]
+            logits.squeeze::<2>(1)
+        } else {
+            // Prefill: process the full sequence in small tiles per layer
+            let mut hidden_full = self.tok_emb.forward(tokens); // [B, T, d]
+            for (l, layer) in self.layers.iter().enumerate() {
+                let policy_win = self.cfg.0.window_policy.window_for(l);
+                let layer_window = crate::cache::combine_windows(window, policy_win);
+                let mut out_layer = burn::tensor::Tensor::<B, 3>::zeros([b, t, self.cfg.0.d_model], &hidden_full.device());
+                let cache_l = cache.cache_mut(l);
+                let mut s = 0usize;
+                while s < t {
+                    let e = core::cmp::min(s + tile_q, t);
+                    let chunk = hidden_full.clone().slice([0..b, s..e, 0..self.cfg.0.d_model]);
+                    let params = StreamingMqaParams {
+                        rope: Some(&self.rope),
+                        start_pos: start_pos + s,
+                        window: layer_window,
+                        sinks: None,
+                        attn_bias: None,
+                    };
+                    let out_chunk = layer.forward(chunk, cache_l, params); // [B, e-s, d]
+                    out_layer.inplace(|tens| tens.slice_assign([0..b, s..e, 0..self.cfg.0.d_model], out_chunk.clone()));
+                    s = e;
+                }
+                hidden_full = out_layer;
+            }
+            let hidden = self.norm_final.forward(hidden_full);
+            let logits = self.lm_head.forward(hidden);
+            let last = logits
+                .clone()
+                .slice([0..b, t - 1..t, 0..self.cfg.0.vocab_size]);
+            last.squeeze::<2>(1)
         }
-        let hidden = self.norm_final.forward(hidden);
-        let logits = self.lm_head.forward(hidden);
-        // Return last-position logits: [B, vocab]
-        let last = logits
-            .clone()
-            .slice([0..b, t - 1..t, 0..self.cfg.0.vocab_size]);
-        last.squeeze::<2>(1)
     }
 }
 
