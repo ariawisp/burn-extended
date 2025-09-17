@@ -182,7 +182,7 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             let bpr = (cols + 1) / 2;
             let mut out = vec![0f32; rows * cols];
             for r in 0..rows {
-                let si = (scales[r] as i32) - UE8_OFFSET - 127;
+                let si = (scales[r] as i32) - UE8_OFFSET;
                 let scale = (2.0f32).powi(si);
                 for i in 0..bpr {
                     let byte = blocks[r * bpr + i];
@@ -327,7 +327,7 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             let bpr = (cols + 1) / 2;
             for r in 0..row_count {
                 let row_idx = row_start + r;
-                let si = (scales[row_idx] as i32) - ue8 - 127;
+                let si = (scales[row_idx] as i32) - ue8;
                 let scale = (2.0f32).powi(si);
                 for i in 0..bpr {
                     let byte = blocks[row_idx * bpr + i];
@@ -346,7 +346,7 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             let mut out = vec![0f32; rows * col_count];
             let bpr = (cols + 1) / 2;
             for r in 0..rows {
-                let si = (scales[r] as i32) - ue8 - 127;
+                let si = (scales[r] as i32) - ue8;
                 let scale = (2.0f32).powi(si);
                 for c_off in 0..col_count {
                     let c = col_start + c_off;

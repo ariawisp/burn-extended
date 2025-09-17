@@ -60,6 +60,9 @@ struct Args {
     /// Verbose debug logging
     #[arg(long = "debug", default_value_t = false)]
     debug: bool,
+    /// Debug only: disable MoE execution to isolate attention/logit issues
+    #[arg(long = "no_moe_debug", default_value_t = false)]
+    no_moe_debug: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -106,10 +109,11 @@ fn main() -> anyhow::Result<()> {
         window: parsed.header.attention_window as usize,
         full_on_even: false,
     };
+    if args.no_moe_debug { cfg.disable_moe = true; }
     let mut model: GptOssModel<B> = cfg.init::<B>(&device);
 
     // Load weights from model.bin
-    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false, /*skip_moe*/ false)?;
+    let _ = load_modelbin_into::<B, _>(&mut model, &args.model_path, /*validate*/ false, /*skip_moe*/ args.no_moe_debug)?;
 
     // Harmony prompt
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)?;
@@ -156,19 +160,34 @@ fn main() -> anyhow::Result<()> {
         let logits_prefill = model.forward_logits(input, &mut cache, 0, burn_extended::attention::AttnWindow::Full);
         if args.debug {
             eprintln!("prefill forward done in {:.2?}", t0.elapsed());
+            // print top-5 logits indices
+            let vec = logits_prefill.clone().into_data().convert::<f32>().into_vec::<f32>().expect("logits vec");
+            let mut idx: Vec<usize> = (0..vec.len()).collect();
+            idx.sort_unstable_by(|&a,&b| vec[b].partial_cmp(&vec[a]).unwrap_or(core::cmp::Ordering::Equal));
+            let topn = idx.iter().take(5).map(|&i| (i, vec[i])).collect::<Vec<_>>();
+            eprintln!("prefill top5: {:?}", topn);
         }
         // Sample first token from prefill logits (next position)
-        let next = burn_extended::sampling::process_and_sample::<B>(
-            logits_prefill,
-            None,
-            sampler,
-            true,
-        );
-        let next_id = next
-            .into_data()
-            .convert::<i64>()
-            .into_vec::<i64>()
-            .expect("token")[0] as usize;
+        let next_id = if args.temperature <= 0.0 && args.top_k.is_none() {
+            // Greedy on CPU
+            let v = logits_prefill
+                .clone()
+                .into_data()
+                .convert::<f32>()
+                .into_vec::<f32>()
+                .expect("logits vec");
+            let mut best = 0usize; let mut bestv = f32::NEG_INFINITY;
+            for (i,&x) in v.iter().enumerate() { let xv = if x.is_finite() { x } else { f32::NEG_INFINITY }; if xv > bestv { bestv = xv; best = i; } }
+            best
+        } else {
+            let next = burn_extended::sampling::process_and_sample::<B>(
+                logits_prefill,
+                None,
+                sampler,
+                true,
+            );
+            next.into_data().convert::<i64>().into_vec::<i64>().expect("token")[0] as usize
+        };
         if args.debug { eprintln!("first_token={}", next_id); }
         if stop_set.contains(&next_id) {
             // No completion content; print empty assistant text
@@ -180,6 +199,22 @@ fn main() -> anyhow::Result<()> {
         last_token = next_id;
         // Do not advance cache here; the next decode step will append this token at start_pos
     }
+    // Helper: robust greedy sampling on CPU for temperature<=0
+    let vocab_size = included_tokens;
+    let greedy_cpu = |logits: burn::tensor::Tensor<B, 2>| -> usize {
+        let data = logits
+            .into_data()
+            .convert::<f32>()
+            .into_vec::<f32>()
+            .expect("logits f32");
+        let mut best = 0usize;
+        let mut best_v = f32::NEG_INFINITY;
+        for (i, &v) in data.iter().enumerate() {
+            let val = if v.is_finite() { v } else { f32::NEG_INFINITY };
+            if val > best_v { best_v = val; best = i; }
+        }
+        best
+    };
     // Step-wise decode for remaining tokens (if any)
     // Unlimited when max_new == 0; guard with a large safety ceiling
     let safety_cap = if max_new == 0 { 8192 } else { max_new };
@@ -194,17 +229,25 @@ fn main() -> anyhow::Result<()> {
         let logits = model.forward_logits(input, &mut cache, start_pos, burn_extended::attention::AttnWindow::Full);
         if args.debug { eprintln!("decode step {}: forward {:.2?} start_pos={} last_token={}", produced, t1.elapsed(), start_pos, last_token); }
         // Sample next token
-        let next = burn_extended::sampling::process_and_sample::<B>(
-            logits,
-            None,
-            sampler,
-            true,
-        );
-        let next_id = next
-            .into_data()
-            .convert::<i64>()
-            .into_vec::<i64>()
-            .expect("token")[0] as usize;
+        let next_id = if args.temperature <= 0.0 && args.top_k.is_none() {
+            greedy_cpu(logits)
+        } else {
+            let next = burn_extended::sampling::process_and_sample::<B>(
+                logits,
+                None,
+                sampler,
+                true,
+            );
+            next
+                .into_data()
+                .convert::<i64>()
+                .into_vec::<i64>()
+                .expect("token")[0] as usize
+        };
+        if next_id >= vocab_size {
+            eprintln!("[warn] sampled invalid token id {} (vocab={}), stopping.", next_id, vocab_size);
+            break;
+        }
         if args.debug { eprintln!("sampled next_id={}", next_id); }
         // Stop on Harmony stop tokens
         if stop_set.contains(&next_id) {
