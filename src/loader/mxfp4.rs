@@ -99,7 +99,7 @@ where
         let blocks = st.tensor(&spec.blocks)?;
         let scales = st.tensor(&spec.scales)?;
         let deq = dequant_mxfp4(&blocks, &scales);
-        let mut snap = TensorSnapshot::from_data(
+        let snap = TensorSnapshot::from_data(
             deq,
             spec.target.split('.').map(|s| s.to_string()).collect(),
             vec!["SafeTensor".to_string()],

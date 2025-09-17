@@ -1,6 +1,5 @@
 use burn_core as burn;
 
-use burn::tensor::backend::Backend;
 use serde::Deserialize;
 
 use super::gpt_oss::GptOssConfig;
@@ -18,7 +17,8 @@ struct GptOssJsonConfig {
     pub experts_per_token: Option<usize>,
     pub sliding_window: usize,
     pub initial_context_length: f32,
-    pub rope_theta: f32,
+    #[serde(rename = "rope_theta")]
+    pub _rope_theta: f32,
     pub rope_scaling_factor: f32,
     pub rope_ntk_alpha: f32,
     pub rope_ntk_beta: f32,
@@ -33,6 +33,8 @@ impl GptOssConfig {
         let d_model = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
         anyhow::ensure!(d_model % n_heads == 0, "d_model must divide n_heads");
+        let head_dim = d_model / n_heads;
+        anyhow::ensure!(head_dim % 2 == 0, "head_dim must be even for RoPE (got {head_dim})");
         Ok(GptOssConfig {
             vocab_size: cfg.vocab_size,
             d_model,

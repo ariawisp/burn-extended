@@ -6,7 +6,6 @@ use burn::nn::{
 };
 use burn::tensor::{backend::Backend, Int, Tensor};
 
-use crate::activation::swiglu_clamp;
 use crate::attention::{
     AttnWindow, StreamingMqaParams, StreamingMultiQueryAttention,
     StreamingMultiQueryAttentionConfig,

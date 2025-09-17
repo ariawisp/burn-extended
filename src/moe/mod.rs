@@ -4,7 +4,6 @@ use burn::module::Module;
 use burn::nn::{Initializer, Linear, LinearConfig, RmsNorm, RmsNormConfig};
 use burn::tensor::{backend::Backend, Tensor};
 
-use crate::activation::swiglu_clamp;
 
 #[derive(Debug, Clone)]
 pub struct MoeConfig {

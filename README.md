@@ -51,3 +51,32 @@ cargo run -p burn-extended --example matrix_game_2
 ```
 
 Loader utilities expect checkpoints in `burn-store`/`safetensors` format and align with the split helpers documented in the model notes.
+
+## Exporter Parity Test (tiny fixture)
+
+- Generate a small GPT‑OSS‑like SafeTensors fixture (1 layer, 2 experts, head_dim=64):
+  - `cargo run -p burn-extended --bin gptoss_fixture -- -o /tmp/gptoss_fixture`
+- Export with the Rust exporter:
+  - `cargo run -p burn-extended --bin gptoss_export -- -s /tmp/gptoss_fixture -d /tmp/model_rust.bin`
+- Export with the Python exporter (requires deps):
+  - `pip install -e ../harmony && pip install -e ../gpt-oss[metal]`
+  - `python ../gpt-oss/gpt_oss/metal/scripts/create-local-model.py -s /tmp/gptoss_fixture -d /tmp/model_python.bin`
+- Compare artifacts:
+  - `cmp -l /tmp/model_rust.bin /tmp/model_python.bin || echo "differs"`
+
+Notes
+- The fixture embeds 200,014 tokens to match GPT‑OSS tokenizer filtering.
+- On macOS, Metal kernels are built by `pip install -e ../gpt-oss[metal]`.
+
+## Export GPT‑OSS 20B (original SafeTensors)
+
+- Download the original checkpoint from HF:
+  - `hf download openai/gpt-oss-20b --include "original/*" --local-dir gpt-oss-20b`
+- Export to model.bin with Rust exporter:
+  - `cargo run -p burn-extended --bin gptoss_export -- -s gpt-oss-20b/original -d gpt-oss-20b/metal/model.bin`
+- Optional: run the Python Metal exporter for comparison:
+  - `python ../gpt-oss/gpt_oss/metal/scripts/create-local-model.py -s gpt-oss-20b/original -d gpt-oss-20b/metal/model_python.bin`
+- Quick diff:
+  - `cmp -l gpt-oss-20b/metal/model.bin gpt-oss-20b/metal/model_python.bin || echo "differs"`
+
+Tip: Set `RUST_LOG=warn` to print exporter section sizes and offsets.
