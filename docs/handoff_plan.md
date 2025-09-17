@@ -1,207 +1,109 @@
-# burn-extended — Handoff Plan and Roadmap (Reader + MoE streaming)
+# burn-extended — Handoff Plan (GPT‑OSS model.bin + MoE)
 
-This doc summarizes current status, what’s been completed, and a concrete plan for the next engineer to take over. Phase 2 (exporter) is complete. Phase 3 (native model.bin reader) is implemented with attention dimension decoupling and mmap-based MoE streaming. We added fixture-level parity tests that validate numerics between the SafeTensors path and the model.bin path. The remaining critical work is to bound MoE memory usage on long prefills via chunked (time-sliced) execution and to add a small amount of runtime instrumentation.
+This doc records current status, what’s been completed, and a concrete plan for the next engineer to take over. We ship the “one correct path” (no feature flags, no CLI overrides for shapes) and are now focused on performance parity for MoE on GPU.
 
 ## Scope Summary
-- Core goal: Correct GPT‑OSS inference in Burn with MoE and MXFP4 semantics; SafeTensors as canonical format; Rust exporter/reader aligned with Metal `model.bin`.
-- Secondary: ACE‑Step utilities and Matrix‑Game helpers are present and can proceed once GPT‑OSS is solid.
+- Primary: Correct GPT‑OSS inference in Burn with model.bin reader and MoE (MXFP4). SafeTensors is canonical; exporter/reader align with GPT‑OSS Metal.
+- Performance goal: MoE execution fully on device (no CPU dequant, minimal H2D), competitive with GPT‑OSS Metal/Triton.
 
 ---
 
-## Phase 2 — Exporter (SafeTensors → model.bin) Parity
-Owner: previous engineer
-Status: COMPLETE
+## What’s Done (Current State)
 
-What’s done
-- Full exporter parity with Python Metal exporter: header, tokenizer payload (regex and special UUIDs), embeddings, per‑layer attention (QKV transform: interleave halves + pre‑scale Q/K for head_dim=64), sinks, attn.out, mlp.norm, gate, final norm, and MoE blocks/scales/biases with correct 16/16384 alignment and UE8 offset.
-- Tiny fixture parity (byte‑for‑byte) and structural verifier against 20B.
+Numerics & IO
+- Exporter parity with Python (headers, tokenizer regex/UUIDs, embeddings, QKV transform with pre‑scaled Q/K, sinks, attn out, gate/norm, final norm, MoE blocks/scales/biases with proper alignment & UE8 offset).
+- Structural verifier and tiny fixture tests; parity validated for attention and final logits.
+- Reader parses model.bin headers/tokenizer and loads non‑MoE weights; decoupled attention supported (d_model ≠ n_heads*head_dim) with pre‑scaled Q/K honored.
+- Learned sinks reshaped to [kv_heads, groups] and applied as bias.
 
-Artifacts
-- Exporter: `src/bin/gptoss_export.rs`
-- Fixture: `src/bin/gptoss_fixture.rs`
-- Structural verifier: `src/bin/gptoss_verify.rs`
-- Tests: `tests/exporter_parity_tests.rs`
+Model/runtime
+- Single correct CLI: all shapes from header, MoE always on, unlimited tokens by default (stop tokens terminate).
+- SwiGLU corrected to GPT‑OSS semantics (alpha=1.702, interleaved, clamp, out = swish(x_glu) · (x_lin + 1)).
+- Prefill processed as a single tile per layer to reduce dispatch overhead.
+- Added robust debug logging (no flags): layer/tile timing and approximate H2D per MoE tile.
 
-Acceptance (met)
-- Tiny fixture parity MATCH vs Python exporter.
-- Real 20B checkpoint exported and structurally verified.
+MoE execution (in progress)
+- Routing (top‑k) runs on GPU.
+- FP4 decode performed on GPU using per‑tile byte slices (nibble decode with f32 math, per‑group exp2 scales), no CPU dequant.
 
 ---
 
-## Phase 3 — Native model.bin Reader and Decoupled Attention
-Owner: current + next engineer
-Status: Implemented; needs MoE time-slice execution to bound RAM on long prefills
+## Known Performance Bottleneck (Root Cause)
 
-What’s done
-- Reader parses headers/tokenizer; loads non‑MoE weights (embedding, per‑layer attn + gate/norm, final norm, unembedding) per Metal layout (16/16KB alignment).
-- MoE: reader stores quantized MXFP4 blocks/scales (U8) and biases (BF16); we use mmap at runtime to pull expert weights lazily.
-- Attention decoupling: d_model != n_heads*head_dim supported.
-  - query: [d_model → n_heads*head_dim]
-  - key/value: [d_model → kv_heads*head_dim]
-  - output: [n_heads*head_dim → d_model]
-  - pre‑scaled Q/K from exporter honored (skip extra 1/sqrt(d_k))
-- Sinks mapping: learned sinks reshaped from [n_heads] to [kv_heads, groups].
-- Fixture inference parity: SafeTensors vs model.bin
-  - Q/K/V after projection+RoPE — MATCH
-  - Attention scores and softmax weights — MATCH
-  - attn.out weight — MATCH
-  - Embedding, final norm (gamma) — MATCH
-  - Final logits — MATCH (after ensuring lm_head has no bias; GPT‑OSS head is bias=false)
+Even after routing + FP4 decode moved to GPU, the path still incurs too many GPU dispatches and transient H2D for index/gather flows. The correct solution is the same as GPT‑OSS Metal/Triton: keep quantized blocks/scales resident on device (u8), and use fused kernels that read raw u8 buffers directly (no int‑index inflation), performing W1 + fused SwiGLU and W2 with compact gather/scatter on device.
 
-Files
-- Reader and verifier: `src/loader/modelbin.rs`, `src/bin/gptoss_verify.rs`
-- Model and attention: `src/models/gpt_oss.rs`, `src/attention/streaming_mqa.rs`
-- SafeTensors GPT‑OSS helpers: `src/loader/gpt_oss.rs` (row‑fused QKV transform; lm_head loader without PyTorch adapter)
-- Parity test (fixture): `tests/inference_parity_fixture.rs`
+The recent regression shown in logs (approx_H2D ~3.2 GiB/tile) came from uploading full expert matrices per layer; this has been removed. We’re back to per‑tile byte slices (orders of magnitude smaller), but fused kernels + residency are required to reach expected speed.
 
-Open issue observed on 20B run
-- Memory spikes with MoE on long prefills (e.g., >10k tokens or heavy Harmony prefill) causing host/device RAM to balloon (e.g., 55 GB). Root cause: processing the entire prefill as one chunk increases the union of routed experts per layer, causing many expert dequants per layer in one pass.
+---
 
-Next tasks (handoff priorities)
-1) Streamed MoE execution (automatic) — CRITICAL
-   - Dequantize MoE weights in tiles during matmul (no full expert materialization) so memory stays bounded regardless of prefill length.
-   - Always-on: no runtime knobs required. Maintain exact MXFP4 math (UE8 offset 14, exponent bias −127, FP4 LUT).
-   - Optional: tiny in-call LRU for dequant scratch within a tile window to avoid repeated dequants if the same expert recurs.
+## Next Engineer: Plan of Record (Single Path, No Flags)
 
-2) Minimal runtime instrumentation (debug‑only)
-   - Log per‑slice: routed experts (set size), bytes dequantized, and peak scratch.
-   - Optionally export simple prometheus‑style counters behind a feature flag.
+1) Persistent Device Buffers (u8)
+- Upload per‑layer raw u8 buffers once:
+  - W1 blocks [E, 2f, d/2 bytes], W1 scales [E, 2f, gpr]
+  - W2 blocks [E, d, f/2 bytes], W2 scales [E, d, gpr]
+  - BF16 biases
+- Expose a small descriptor (QuantLinearMxFp4) with layout metadata (rows, cols, bpr, gpr, strides).
 
-3) End‑to‑end validation (20B)
-   - With streamed MoE enabled by default: load 20B model.bin, run Harmony prompt(s), confirm bounded memory (<2× model.bin size total host+device, excluding KV cache) and stable generation.
-   - Keep fixture parity green (unit tests).
+2) Compact Routing on GPU
+- Kernel: top‑k per token row + softmax; output compact indices [n,k] (u32) + weights [n,k] (f32).
+- Keep `gather/scatter` indices on device.
+
+3) Fused WGSL Kernels
+- Kernel A (W1 + SwiGLU):
+  - Read u8 blocks + per‑group scales directly; FP4 decode (nibble: & 0xF, >> 4) + exp2(group_exp − 14 − 127); matmul to [m, 2f]; fused SwiGLU + clamp → [m, f].
+- Kernel B (W2 + Scatter):
+  - Read u8 blocks/scales; matmul [m, f] × [f, d] → [m, d]; multiply by gate weight; scatter‑add back to [n, d] using compact indices.
+
+4) Integrate into MoE forward
+- Replace the current decompose/gather/reshape graph with: route (kernel) → compact gather (device) → fused W1 (kernel) → fused W2 (kernel) → scatter.
+- Attention path remains unchanged (already correct & reasonably fast).
+
+5) Instrumentation & Validation
+- Keep existing per‑layer/tile timing; add per‑kernel timings behind `--debug`.
+- Validate numerics against CPU path on small configs (layer outputs and final logits).
 
 Acceptance Criteria
-- 20B model.bin runs with MoE enabled and memory bounded (target <2× model.bin size total RAM excluding KV cache).
-- Fixture parity tests all pass.
-- Structural verifier remains green.
-
-Risks/Dependencies
-- Metal/WGPU allocator can retain buffers between slices; ensure we reuse scratch buffers and avoid per‑token allocations.
-- Large prompts must be chunked consistently across layers to keep memory stable.
+- 20B model.bin runs at expected GPU speed for 64‑token prefills and steady decode (MoE is not the bottleneck).
+- No CPU dequant; no large H2D spikes; memory stable.
+- Fixture parity & structural verifier remain green.
 
 ---
 
-## Phase 4 — Quantized Runtime and Performance
-Owner: performance‑focused engineer
-Status: Not started (unblocked after time‑sliced MoE)
-
-Tasks
-- MXFP4 device kernels (WGPU/CubeCL): matmul on FP4 blocks with UE8 scales to avoid host dequant.
-- Integrate into MoE forward path; minimize host copies and CPU work.
-- Attention perf: iterate on quiet_softmax and cache layout.
-- Benchmarks vs BF16.
-
-Acceptance
-- MXFP4 MoE yields measurable speedups at medium batch/sequence sizes.
-
-Estimate
-- 2–4+ weeks.
-
----
-
-## Phase 5 — Documentation, CI, and Upstreaming
-Owner: next engineer
-Status: Partially covered
-
-Tasks
-- Docs: expand README with model.bin usage, verifier steps, fixture parity, and a note that MoE memory bounding is automatic (no tuning required).
-- CI: macOS + Linux; run `cargo test`, compile examples, fixture parity job (export both ways, diff), structural job (verify fixture and sample of real checkpoint headers).
-- Upstreaming: propose reusable parts to burn‑core (streaming caches, sinks bias, masks, decoupled MQA).
-
-Acceptance
-- CI green; at least one upstream PR draft.
-
-Estimate
-- 1–2 weeks.
-
----
-
-## GPT‑OSS Validation & Hardening (ongoing)
-Owner: next engineer
-
-Tasks
-- Numerics: confirm small config parity vs PyTorch on representative blocks (attention, MoE expert forward in isolation).
-- Config robustness: clear errors on mismatches; safe defaults.
-- Optional ALiBi: keep hooks off by default; verify bias path correctness.
-
-Acceptance
-- End‑to‑end generation succeeds for multiple prompts on 20B (bounded memory, stable latency).
-
----
-
-## ACE‑Step — Follow‑On (not blocking GPT‑OSS)
-Owner: next engineer
-
-Tasks
-- Bias provider trait + minimal impl (additive bias per chunk).
-- Diffusion demos using FlowMatch Euler/Heun + guidance helpers.
-- SafeTensors mapping for ACE‑Step checkpoints.
-
-Acceptance
-- Bias provider example runs; diffusion demo yields expected shapes.
-
-Estimate
-- 3–5 days for MVP.
-
----
-
-## Matrix‑Game‑2 — Follow‑On (not blocking GPT‑OSS)
-Owner: next engineer
-
-Tasks
-- Minimal action head + codec.
-- Control loop demo using streaming attention + sinks; 3D RoPE/video patches.
-- Optional checkpoint loader.
-
-Acceptance
-- Interactive loop runs; tokens/actions handled correctly.
-
-Estimate
-- 3–5 days for MVP.
-
----
-
-## Quick Start / Commands
-- Export 20B model.bin
-  - `cargo run -p burn-extended --bin gptoss_export -- -s ~/gpt-oss-20b/original -d ~/gpt-oss-20b/metal/model.bin`
-- Verify structure
-  - `cargo run -p burn-extended --bin gptoss_verify -- -s ~/gpt-oss-20b/original ~/gpt-oss-20b/metal/model.bin`
-- Tiny fixture parity
-  - `cargo run -p burn-extended --bin gptoss_fixture -- -o /tmp/gptoss_fixture`
-  - `cargo test -p burn-extended --test inference_parity_fixture`
-- Inference (SafeTensors)
-  - `export GPT_OSS_DIR=~/gpt-oss-20b/original && cargo run -p burn-extended --example gpt_oss_harmony_infer`
-- Inference (model.bin)
+## How to Run (Current)
+- Export: `cargo run -p burn-extended --bin gptoss_export -- -s ~/gpt-oss-20b/original -d ~/gpt-oss-20b/metal/model.bin`
+- Verify: `cargo run -p burn-extended --bin gptoss_verify -- -s ~/gpt-oss-20b/original ~/gpt-oss-20b/metal/model.bin`
+- Inference (model.bin):
   - `cargo run -p burn-extended --bin gptoss_modelbin_infer -- --model ~/gpt-oss-20b/metal/model.bin`
-  - MoE memory bounding is automatic (streamed dequant + tiled matmuls)
-  - Debug: `--no_moe` to validate non‑MoE path
+  - With logs: add `--debug` (prefill tiles, per‑layer times, approx H2D)
+
+Expected behavior (until fused kernels land)
+- Correct outputs; prefill+decode will be slower than desired, but should not show multi‑GiB H2D spikes.
 
 ---
 
-## Reference: Files to Know
-- Exporter: `src/bin/gptoss_export.rs`
-- Verifier: `src/bin/gptoss_verify.rs`
+## Code Map
+- Exporter / Verifier: `src/bin/gptoss_export.rs`, `src/bin/gptoss_verify.rs`
 - Reader: `src/loader/modelbin.rs`
-- Inference (model.bin): `src/bin/gptoss_modelbin_infer.rs`
-- MoE module (routing + mmap streaming): `src/moe/mod.rs`
-- GPT‑OSS model/config: `src/models/gpt_oss.rs`, `src/models/gpt_oss_config.rs`
-- SafeTensors loaders: `src/loader/gpt_oss.rs`, `src/loader/mxfp4.rs`, `src/loader/qkv.rs`
+- Inference: `src/bin/gptoss_modelbin_infer.rs`
+- Model / Config: `src/models/gpt_oss.rs`, `src/models/gpt_oss_config.rs`
+- MoE module (routing + current GPU FP4 decode path): `src/moe/mod.rs`
 - Attention: `src/attention/*`
-- Harmony example: `examples/gpt_oss_harmony_infer.rs`
-- Fixture parity: `tests/inference_parity_fixture.rs`
-- Architecture notes: `docs/gpt-oss-architecture.md`
+- Tests / parity: `tests/inference_parity_fixture.rs`
 
 ---
 
-## Handoff Notes
-- Branch/build
-  - Repo builds on macOS (WGPU). Tests pass; parity test requires Python deps.
-- Coordination
-  - Harmony regex/specials now match exporter; any changes should be done via Harmony PRs to avoid divergence.
-- Performance & memory
-  - Reader now stores MoE quantized form and biases; on‑the‑fly dequant in MoE forward is the next step to keep memory bounded.
-  - Attention pre‑scaling honored; RoPE width robust for odd head_dim.
+## Risks & Notes
+- WGSL validation: avoid mixing int/float in the same expression; do nibble math in f32 then cast.
+- Persistent buffers: keep as raw u8; kernels should read them directly (no i64 index inflation).
+- Memory: persistent u8 buffers per layer are large; ensure unified memory budget is respected (Apple Silicon is fine for 20B).
+- Dispatch count: fused kernels should dramatically reduce the number of launches per layer vs. generic ops.
 
-## Contact & Questions
-- For exporter semantics, compare against `gpt_oss/metal/scripts/create-local-model.py`. The verifier and parity test are the fastest way to catch regressions.
+---
+
+## Ask / Next Owner
+- Implement persistent u8 device buffers for MoE, routing kernel, and fused W1/W2 kernels as the only path (no flags).
+- Keep existing logs; add kernel timings under `--debug`.
+- Validate numerics and measure perf; iterate tile shapes and workgroup sizes as needed.
+
+Once fused kernels are in, we’ll be at the “one correct way” with performance on par with GPT‑OSS Metal/Triton.

@@ -63,6 +63,7 @@ impl GptOssConfig {
             rope_initial_context: cfg.initial_context_length,
             rope_ntk_alpha: cfg.rope_ntk_alpha,
             rope_ntk_beta: cfg.rope_ntk_beta,
+            verbose: false,
         })
     }
 }

@@ -46,6 +46,7 @@ fn snapshot(path: &str, data: TensorData) -> TensorSnapshot {
 pub struct ModelBinHeader {
     pub num_blocks: u32,
     pub num_experts: u32,
+    pub num_active_experts: u32,
     pub embedding_dim: u32,
     pub mlp_dim: u32,
     pub head_dim: u32,
@@ -86,7 +87,7 @@ fn parse_headers(file: &mut File) -> Result<ParsedModelBin> {
     let _context_length = read_u32(&mut *file)?;
     let num_blocks = read_u32(&mut *file)?;
     let num_experts = read_u32(&mut *file)?;
-    let _num_active_experts = read_u32(&mut *file)?;
+    let num_active_experts = read_u32(&mut *file)?;
     let embedding_dim = read_u32(&mut *file)?;
     let mlp_dim = read_u32(&mut *file)?;
     let _swiglu_limit = read_f32(&mut *file)?;
@@ -131,6 +132,7 @@ fn parse_headers(file: &mut File) -> Result<ParsedModelBin> {
         header: ModelBinHeader {
             num_blocks,
             num_experts,
+            num_active_experts,
             embedding_dim,
             mlp_dim,
             head_dim,
@@ -314,11 +316,13 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     let cols_mlp2 = ffn_hidden;
     let bpr_mlp1 = (cols_mlp1 + 1) / 2;
     let bpr_mlp2 = (cols_mlp2 + 1) / 2;
+    let gpr_mlp1 = (cols_mlp1 + 31) / 32; // scales per 32-col block
     let bytes_mlp1_blocks = rows_mlp1 * bpr_mlp1;
-    let bytes_mlp1_scales = rows_mlp1;
+    let bytes_mlp1_scales = rows_mlp1 * gpr_mlp1;
     let bytes_mlp1_bias = rows_mlp1 * 2;
+    let gpr_mlp2 = (cols_mlp2 + 31) / 32;
     let bytes_mlp2_blocks = rows_mlp2 * bpr_mlp2;
-    let bytes_mlp2_scales = rows_mlp2;
+    let bytes_mlp2_scales = rows_mlp2 * gpr_mlp2;
     let bytes_mlp2_bias = rows_mlp2 * 2;
 
     // Build per-layer streaming indices for MoE quantized weights (mmap-friendly offsets).
@@ -449,3 +453,5 @@ fn attach_moe_streaming_contexts_if_supported<B: burn::tensor::backend::Backend,
         m_any.set_moe_streaming_contexts(contexts);
     }
 }
+
+// Upload device-resident quantized MoE tensors per layer for faster runtime decoding.

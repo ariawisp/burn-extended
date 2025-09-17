@@ -288,7 +288,7 @@ fn main() -> Result<()> {
                 off = need;
             }
             let mut layer_bytes: u64 = 0;
-            for _e in 0..experts {
+            for eidx in 0..experts {
                 // mlp1 blocks
                 let need = align_up(off, 16);
                 if need != off { let mut pad = vec![0u8; (need - off) as usize]; read_exact(&mut f, &mut pad)?; off = need; }
@@ -296,7 +296,17 @@ fn main() -> Result<()> {
                 // mlp1 scales
                 let need = align_up(off, 16);
                 if need != off { let mut pad = vec![0u8; (need - off) as usize]; read_exact(&mut f, &mut pad)?; off = need; }
-                f.seek(SeekFrom::Current(per_e_mlp1_scales as i64))?; off += per_e_mlp1_scales as u64; layer_bytes += (16 + per_e_mlp1_scales) as u64;
+                if l == 0 && eidx == 0 {
+                    // Peek first 64 scales bytes for mlp1
+                    let mut peek = vec![0u8; 64];
+                    read_exact(&mut f, &mut peek)?;
+                    print!("[verify] L0:E0 mlp1_scales[0..64]=");
+                    for b in &peek { print!("{} ", b); }
+                    println!("");
+                } else {
+                    f.seek(SeekFrom::Current(per_e_mlp1_scales as i64))?;
+                }
+                off += per_e_mlp1_scales as u64; layer_bytes += (16 + per_e_mlp1_scales) as u64;
                 // mlp1 bias
                 let need = align_up(off, 16);
                 if need != off { let mut pad = vec![0u8; (need - off) as usize]; read_exact(&mut f, &mut pad)?; off = need; }
@@ -308,7 +318,17 @@ fn main() -> Result<()> {
                 // mlp2 scales
                 let need = align_up(off, 16);
                 if need != off { let mut pad = vec![0u8; (need - off) as usize]; read_exact(&mut f, &mut pad)?; off = need; }
-                f.seek(SeekFrom::Current(per_e_mlp2_scales as i64))?; off += per_e_mlp2_scales as u64; layer_bytes += (16 + per_e_mlp2_scales) as u64;
+                if l == 0 && eidx == 0 {
+                    // Peek first 64 scales bytes for mlp2
+                    let mut peek = vec![0u8; 64];
+                    read_exact(&mut f, &mut peek)?;
+                    print!("[verify] L0:E0 mlp2_scales[0..64]=");
+                    for b in &peek { print!("{} ", b); }
+                    println!("");
+                } else {
+                    f.seek(SeekFrom::Current(per_e_mlp2_scales as i64))?;
+                }
+                off += per_e_mlp2_scales as u64; layer_bytes += (16 + per_e_mlp2_scales) as u64;
                 // mlp2 bias
                 let need = align_up(off, 16);
                 if need != off { let mut pad = vec![0u8; (need - off) as usize]; read_exact(&mut f, &mut pad)?; off = need; }

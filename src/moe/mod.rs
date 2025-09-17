@@ -2,14 +2,8 @@ use burn_core as burn;
 
 use burn::module::{Ignored, Module};
 use burn::nn::{Initializer, Linear, LinearConfig, RmsNorm, RmsNormConfig};
-use burn::tensor::{backend::Backend, Tensor};
+use burn::tensor::{backend::Backend, Int, Tensor};
 use alloc::sync::Arc;
-
-// Debug macro (enable with `--features moe_debug`)
-#[cfg(feature = "moe_debug")]
-macro_rules! moe_dbg { ($($t:tt)*) => { eprintln!($($t)*); } }
-#[cfg(not(feature = "moe_debug"))]
-macro_rules! moe_dbg { ($($t:tt)*) => {}; }
 
 // Streaming context for MoE: holds file mapping and per-expert offsets.
 #[derive(Debug, Clone)]
@@ -125,12 +119,6 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
         // Pull gates to CPU to compute top-k per token
         let e = self.num_experts;
         let k = self.experts_per_token.min(e).max(1);
-        let gates_host = gates
-            .clone()
-            .into_data()
-            .convert::<f32>()
-            .into_vec::<f32>()
-            .expect("gates to f32");
 
         // weights_per_expert[e][n]
         let mut weights_per_expert: Vec<Vec<f32>> = vec![vec![0.0f32; n]; e];
@@ -182,7 +170,9 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             let bpr = (cols + 1) / 2;
             let mut out = vec![0f32; rows * cols];
             for r in 0..rows {
-                let si = (scales[r] as i32) - UE8_OFFSET;
+                // SafeTensors scales are stored with a bias of 127 (see loader/mxfp4.rs).
+                // model.bin adds UE8_OFFSET on top. Undo both here: (byte - UE8_OFFSET - 127).
+                let si = (scales[r] as i32) - UE8_OFFSET - 127;
                 let scale = (2.0f32).powi(si);
                 for i in 0..bpr {
                     let byte = blocks[r * bpr + i];
@@ -309,10 +299,7 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
         // Output accumulator: built by tiles over tokens, then written back.
         let mut acc = Tensor::<B, 2>::zeros([n, d], &norm_flat.device());
 
-        // MXFP4 constants and layout helpers
-        const FP4_VALUES: [f32; 16] = [
-            0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-        ];
+        // MXFP4 layout helpers
         let ue8 = ctx.ue8_offset;
         let rows1 = ctx.rows_mlp1; // 2f
         let cols1 = ctx.cols_mlp1; // d_model
@@ -320,43 +307,121 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
         let cols2 = ctx.cols_mlp2; // f
         let bpr1 = (cols1 + 1) / 2;
         let bpr2 = (cols2 + 1) / 2;
+        let gpr1 = (cols1 + 31) / 32; // scale groups per row for W1
+        let gpr2 = (cols2 + 31) / 32; // scale groups per row for W2
+
+        // Build FP4 LUT [16] and column group indices [cols1] on device for this call
+        const FP4_VALUES: [f32; 16] = [
+            0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+        ];
+        let lut1d = Tensor::<B, 1>::from_floats(burn_tensor::TensorData::new(FP4_VALUES.to_vec(), [16]), &norm_flat.device());
+        let w1_groups = Tensor::<B, 1, Int>::arange(0..(cols1 as i64), &norm_flat.device()).div_scalar(32 as i64);
+
+        // Device dequant helpers (decode only required rows/cols on device using gather)
+        let decode_rows_device_from_bytes = |blocks: &[u8], scales: &[u8], row_start: usize, row_count: usize, cols: usize, gpr: usize| -> Tensor<B, 2> {
+            // Build blocks tile [rows, bpr]
+            let bpr = (cols + 1) / 2;
+            let mut blk_i64: Vec<i64> = Vec::with_capacity(row_count * bpr);
+            for r in 0..row_count {
+                let off = (row_start + r) * bpr;
+                for i in 0..bpr { blk_i64.push(blocks[off + i] as i64); }
+            }
+            let blocks_t = Tensor::<B, 2, Int>::from_ints(
+                burn_tensor::TensorData::new(blk_i64, [row_count, bpr]),
+                &norm_flat.device(),
+            );
+            // Compute nibble indices
+            let blocks_f = blocks_t.clone().float();
+            let hi_f = blocks_f.clone().div_scalar(16.0f32).floor();
+            let lo_f = blocks_f - hi_f.clone().mul_scalar(16.0f32);
+            let hi_idx = hi_f.int();
+            let lo_idx = lo_f.int();
+            // Build per-row LUT for gather: [rows, 16]
+            let lut_rows = lut1d.clone().unsqueeze_dim::<2>(0).repeat_dim(0, row_count);
+            let lo_vals = lut_rows.clone().gather(1, lo_idx); // [rows,bpr]
+            let hi_vals = lut_rows.gather(1, hi_idx); // [rows,bpr]
+            let lo_u = lo_vals.unsqueeze_dim::<3>(2);
+            let hi_u = hi_vals.unsqueeze_dim::<3>(2);
+            let decoded = Tensor::cat(vec![lo_u, hi_u], 2).reshape([row_count, bpr * 2]);
+            // Build per-element scales matrix [row_count, cols]
+            let mut scl_i64: Vec<i64> = Vec::with_capacity(row_count * gpr);
+            for r in 0..row_count {
+                let off = (row_start + r) * gpr;
+                for g in 0..gpr { scl_i64.push(scales[off + g] as i64); }
+            }
+            let scales_u8 = Tensor::<B, 2, Int>::from_ints(
+                burn_tensor::TensorData::new(scl_i64, [row_count, gpr]),
+                &norm_flat.device(),
+            );
+            let scales_f = scales_u8
+                .float()
+                .sub_scalar((ue8 + 127) as f32)
+                .mul_scalar(core::f32::consts::LN_2)
+                .exp(); // [row_count, gpr]
+            let idx2d = w1_groups.clone().reshape([1, cols]).repeat_dim(0, row_count);
+            let scales_full = scales_f.gather(1, idx2d);
+            decoded * scales_full
+        };
+
+        let decode_cols_device_from_bytes = |blocks: &[u8], scales: &[u8], col_start: usize, col_count: usize, rows: usize, cols: usize, gpr: usize| -> Tensor<B, 2> {
+            let bpr = (cols + 1) / 2;
+            let start_byte = col_start / 2;
+            let last_col = col_start + col_count - 1;
+            let end_byte = last_col / 2;
+            let bytes_count = end_byte - start_byte + 1;
+            let offset_in_pair = (col_start % 2) as usize;
+            // Blocks tile [rows, bytes_count]
+            let mut blk_i64: Vec<i64> = Vec::with_capacity(rows * bytes_count);
+            for r in 0..rows {
+                let off = r * bpr + start_byte;
+                for i in 0..bytes_count { blk_i64.push(blocks[off + i] as i64); }
+            }
+            let blocks_t = Tensor::<B, 2, Int>::from_ints(
+                burn_tensor::TensorData::new(blk_i64, [rows, bytes_count]),
+                &norm_flat.device(),
+            );
+            let blocks_f = blocks_t.clone().float();
+            let hi_f = blocks_f.clone().div_scalar(16.0f32).floor();
+            let lo_f = blocks_f - hi_f.clone().mul_scalar(16.0f32);
+            let hi_idx = hi_f.int();
+            let lo_idx = lo_f.int();
+            let lut_rows = lut1d.clone().unsqueeze_dim::<2>(0).repeat_dim(0, rows);
+            let lo_vals = lut_rows.clone().gather(1, lo_idx);
+            let hi_vals = lut_rows.gather(1, hi_idx);
+            let pairs = Tensor::cat(vec![lo_vals.unsqueeze_dim::<3>(2), hi_vals.unsqueeze_dim::<3>(2)], 2)
+                .reshape([rows, bytes_count * 2]);
+            let decoded = pairs.clone().slice([0..rows, offset_in_pair..offset_in_pair + col_count]);
+
+            // Scales tile for columns
+            let group_start = col_start / 32;
+            let group_end = (last_col) / 32;
+            let group_count = group_end - group_start + 1;
+            let mut scl_i64: Vec<i64> = Vec::with_capacity(rows * group_count);
+            for r in 0..rows {
+                let off = r * gpr + group_start;
+                for g in 0..group_count { scl_i64.push(scales[off + g] as i64); }
+            }
+            let scales_u8 = Tensor::<B, 2, burn::tensor::Int>::from_ints(
+                burn_tensor::TensorData::new(scl_i64, [rows, group_count]),
+                &norm_flat.device(),
+            );
+            let scales_f = scales_u8
+                .float()
+                .sub_scalar((ue8 + 127) as f32)
+                .mul_scalar(core::f32::consts::LN_2)
+                .exp();
+            let rel_idx = Tensor::<B, 1, burn::tensor::Int>::arange(0..(col_count as i64), &norm_flat.device())
+                .add_scalar(col_start as i64)
+                .div_scalar(32 as i64)
+                .sub_scalar(group_start as i64);
+            let idx2d = rel_idx.reshape([1, col_count]).repeat_dim(0, rows);
+            let scales_full = scales_f.gather(1, idx2d);
+            decoded * scales_full
+        };
+
 
         // Dequant a contiguous range of rows for W1 (shape [rows, cols1])
-        let dequant_rows_range = |blocks: &[u8], scales: &[u8], row_start: usize, row_count: usize, cols: usize| -> Vec<f32> {
-            let mut out = vec![0f32; row_count * cols];
-            let bpr = (cols + 1) / 2;
-            for r in 0..row_count {
-                let row_idx = row_start + r;
-                let si = (scales[row_idx] as i32) - ue8;
-                let scale = (2.0f32).powi(si);
-                for i in 0..bpr {
-                    let byte = blocks[row_idx * bpr + i];
-                    let lo = (byte & 0x0F) as usize;
-                    let hi = (byte >> 4) as usize;
-                    let c = i * 2;
-                    if c < cols { out[r * cols + c] = FP4_VALUES[lo] * scale; }
-                    if c + 1 < cols { out[r * cols + c + 1] = FP4_VALUES[hi] * scale; }
-                }
-            }
-            out
-        };
-
-        // Dequant a slice of columns for W2 (rows=rows2, cols=cols2). Returns [rows2, col_count]
-        let dequant_cols_range = |blocks: &[u8], scales: &[u8], col_start: usize, col_count: usize, rows: usize, cols: usize| -> Vec<f32> {
-            let mut out = vec![0f32; rows * col_count];
-            let bpr = (cols + 1) / 2;
-            for r in 0..rows {
-                let si = (scales[r] as i32) - ue8;
-                let scale = (2.0f32).powi(si);
-                for c_off in 0..col_count {
-                    let c = col_start + c_off;
-                    let byte = blocks[r * bpr + (c / 2)];
-                    let nib = if c % 2 == 0 { (byte & 0x0F) as usize } else { (byte >> 4) as usize };
-                    out[r * col_count + c_off] = FP4_VALUES[nib] * scale;
-                }
-            }
-            out
-        };
+        // Device path only: no host dequant helpers retained
 
         // Token-tiling: limit intermediate [n, *] tensors to a manageable size
         let tile_n = usize::min(256, usize::max(1, n));
@@ -365,26 +430,31 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             let take_n = core::cmp::min(tile_n, n - start_n);
             let norm_tile = norm_flat.clone().slice([start_n..start_n + take_n, 0..d]); // [take_n, d]
 
-            // Build top-k weights per expert for this tile and track which experts are used
+            // Build top-k on device and pull only per-expert weights for this token tile
+            let gates_tile = gates.clone().reshape([n, e]).slice([start_n..start_n + take_n, 0..e]); // [take_n, e]
+            let (topv, topi) = gates_tile.clone().topk_with_indices(k, 1); // [take_n,k] values, indices
+            let maxv = topv.clone().max_dim(1).reshape([take_n, 1]);
+            let exps = (topv - maxv).exp();
+            let sumv = exps.clone().sum_dim(1).reshape([take_n, 1]);
+            let soft = exps / sumv; // [take_n,k]
             let mut used = vec![false; e];
             let mut weights_tile_per_expert: Vec<Vec<f32>> = vec![vec![0.0f32; take_n]; e];
-            for i_off in 0..take_n {
-                let i = start_n + i_off;
-                let row = &gates_host[i * e..(i + 1) * e];
-                let mut idx: Vec<usize> = (0..e).collect();
-                idx.sort_unstable_by(|&a, &bidx| row[bidx].partial_cmp(&row[a]).unwrap_or(core::cmp::Ordering::Equal));
-                let top = &idx[..k];
-                let mut max_v = f32::NEG_INFINITY;
-                for &j in top.iter() { max_v = max_v.max(row[j]); }
-                let mut sum = 0.0f32;
-                let mut tmp = vec![0.0f32; k];
-                for (p, &j) in top.iter().enumerate() { let v = (row[j] - max_v).exp(); tmp[p] = v; sum += v; }
-                if sum > 0.0 {
-                    for (p, &j) in top.iter().enumerate() {
-                        weights_tile_per_expert[j][i_off] = tmp[p] / sum;
-                        used[j] = true;
-                    }
-                }
+            // For each expert, select its weight per row if present among top-k
+            for expert in 0..e {
+                // mask = (topi == expert)
+                let expert_fill = Tensor::<B, 2, Int>::from_ints(
+                    burn_tensor::TensorData::new(vec![expert as i64; take_n * k], [take_n, k]),
+                    &topi.device(),
+                );
+                let mask = topi.clone().equal(expert_fill);
+                let masked = soft.clone().mask_fill(mask.clone(), 0.0);
+                let w = masked.sum_dim(1); // [take_n]
+                let w_host = w.into_data().convert::<f32>().into_vec::<f32>().expect("weights vec");
+                // track used
+                let mut any = false;
+                for &v in &w_host { if v != 0.0 { any = true; break; } }
+                used[expert] = any;
+                weights_tile_per_expert[expert] = w_host;
             }
 
             // Accumulator for this token tile
@@ -392,6 +462,7 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
 
             let mut experts_used = 0usize;
             let mut tokens_used_total = 0usize;
+            let mut bytes_h2d_total: usize = 0;
             for expert in 0..e {
                 if !used[expert] { continue; }
                 experts_used += 1;
@@ -403,9 +474,9 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
                 let s2 = off.mlp2_scales_off as usize;
                 let b2_off = off.mlp2_blocks_off as usize;
                 let blocks1 = &ctx.mmap[b1_off..b1_off + rows1 * bpr1];
-                let scales1 = &ctx.mmap[s1..s1 + rows1];
+                let scales1 = &ctx.mmap[s1..s1 + rows1 * gpr1];
                 let blocks2 = &ctx.mmap[b2_off..b2_off + rows2 * bpr2];
-                let scales2 = &ctx.mmap[s2..s2 + rows2];
+                let scales2 = &ctx.mmap[s2..s2 + rows2 * gpr2];
 
                 // Bias tensors
                 let b1_full = self
@@ -444,21 +515,22 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
                 let mut ex_tile_sum = Tensor::<B, 2>::zeros([take_n, d], &norm_tile.device());
                 while start_f < f {
                     let take_f = core::cmp::min(tile_f, f - start_f);
-                    // Dequant W1 rows tile
-                    let w1_a = dequant_rows_range(blocks1, scales1, start_f, take_f, cols1);
-                    let w1_b = dequant_rows_range(blocks1, scales1, f + start_f, take_f, cols1);
-                    let mut w1_tile = Vec::with_capacity((take_f * 2) * cols1);
-                    w1_tile.extend_from_slice(&w1_a);
-                    w1_tile.extend_from_slice(&w1_b);
-                    let w1_t = Tensor::<B, 2>::from_floats(burn_tensor::TensorData::new(w1_tile, [take_f * 2, cols1]), &norm_tile.device());
+                    // Estimate H2D bytes for this expert and f-slice
+                    let w1_bytes = (take_f * 2) * bpr1 + (take_f * 2) * gpr1; // blocks + scales (u8)
+                    let bytes_count = (take_f + 1) / 2; // W2 bytes per row
+                    let w2_bytes = rows2 * bytes_count + rows2 * ((take_f + 31) / 32);
+                    bytes_h2d_total += w1_bytes + w2_bytes;
+                    // Dequant W1 rows tile on device from bytes
+                    let w1_a = decode_rows_device_from_bytes(blocks1, scales1, start_f, take_f, cols1, gpr1);
+                    let w1_b = decode_rows_device_from_bytes(blocks1, scales1, f + start_f, take_f, cols1, gpr1);
+                    let w1_t = Tensor::cat(vec![w1_a, w1_b], 0); // [2*take_f, cols1]
                     // Bias for this W1 tile
                     let b1_a = b1_full.clone().slice([start_f..start_f + take_f]);
                     let b1_b = b1_full.clone().slice([f + start_f..f + start_f + take_f]);
                     let b1_t = Tensor::cat(vec![b1_a, b1_b], 0);
 
-                    // Dequant W2 columns tile once for this f-slice
-                    let w2_cols = dequant_cols_range(blocks2, scales2, start_f, take_f, rows2, cols2);
-                    let w2_t = Tensor::<B, 2>::from_floats(burn_tensor::TensorData::new(w2_cols, [rows2, take_f]), &norm_tile.device());
+                    // Dequant W2 columns tile on device from bytes
+                    let w2_t = decode_cols_device_from_bytes(blocks2, scales2, start_f, take_f, rows2, cols2, gpr2);
 
                     // Compact all routed tokens for this expert into a single batch to reduce kernel launches
                     let total_m: usize = ranges.iter().map(|(a,b)| b - a).sum();
@@ -498,14 +570,9 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
                     acc_tile.inplace(|t| t.slice_assign([rs..re, 0..d], new_slice.clone()));
                 }
             }
-            // Touch counters to avoid unused warnings when debug is off
-            let _ = (experts_used, tokens_used_total);
-            if tokens_used_total > 0 {
-                moe_dbg!(
-                    "moe tile: experts_used={} tokens_used_total={} take_n={}",
-                    experts_used, tokens_used_total, take_n
-                );
-            }
+            // Log approximate H2D volume per token tile (bytes on host -> device as i64 indices)
+            let bytes_mb = (bytes_h2d_total as f64) * 8.0 / (1024.0 * 1024.0); // rough upper bound if uploaded as Int
+            eprintln!("moe tile: experts_used={} tokens_used_total={} take_n={} approx_H2D~{:.1} MiB", experts_used, tokens_used_total, take_n, bytes_mb);
 
             // Write accumulated tile into output accumulator
             acc.inplace(|t| t.slice_assign([start_n..start_n + take_n, 0..d], acc_tile));

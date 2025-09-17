@@ -3,10 +3,14 @@ use burn_core as burn;
 use burn::tensor::{backend::Backend, Tensor};
 use burn_tensor::activation::sigmoid;
 
-/// Applies SwiGLU activation with an optional clamp applied to the result.
+/// GPT‑OSS SwiGLU (interleaved) with optional clamp and alpha=1.702 by default.
 ///
-/// The input tensor must have an even-sized last dimension. The first half of the
-/// last dimension is treated as the value branch and the second half as the gate.
+/// Input last dimension must be even and is interpreted as interleaved pairs:
+/// [x_glu0, x_lin0, x_glu1, x_lin1, ...]. The output reduces the last dim by 2.
+/// Formula (matching Triton/Metal reference):
+///   x_glu' = clamp(x_glu,       [-inf, limit])
+///   x_lin' = clamp(x_linear,    [-limit, +limit])
+///   out    = (x_glu' * sigmoid(alpha * x_glu')) * (x_lin' + 1)
 pub fn swiglu_clamp<B: Backend, const D: usize>(
     tensor: Tensor<B, D>,
     alpha: f32,
@@ -20,20 +24,22 @@ pub fn swiglu_clamp<B: Backend, const D: usize>(
 
     let numel = tensor.shape().num_elements();
     let leading = numel / last;
-    let reshaped = tensor.reshape([leading, last]);
+    let resh2 = tensor.reshape([leading, last]);
+    let resh3 = resh2.reshape([leading, half, 2]);
+    let x_glu = resh3.clone().slice([0..leading, 0..half, 0..1]).reshape([leading, half]);
+    let x_lin = resh3.clone().slice([0..leading, 0..half, 1..2]).reshape([leading, half]);
 
-    let value = reshaped.clone().slice([0..leading, 0..half]);
-    let gate = reshaped.slice([0..leading, half..last]);
+    let (x_glu_c, x_lin_c) = if let Some(limit) = clamp_limit {
+        (x_glu.clone().clamp(f32::NEG_INFINITY, limit), x_lin.clone().clamp(-limit, limit))
+    } else {
+        (x_glu.clone(), x_lin.clone())
+    };
 
-    let swish = sigmoid(gate.clone().mul_scalar(alpha)) * gate;
-    let mut activated = swish * value;
-
-    if let Some(limit) = clamp_limit {
-        activated = activated.clamp(-limit, limit);
-    }
+    let out_glu = x_glu_c.clone() * sigmoid(x_glu_c.clone().mul_scalar(alpha));
+    let ones = Tensor::<B, 2>::ones([leading, half], &out_glu.device());
+    let out = out_glu * (x_lin_c + ones);
 
     dims[last_index] = half;
-    // Reshape back to original rank `D`
     let shape: [usize; D] = dims;
-    activated.reshape(shape)
+    out.reshape(shape)
 }

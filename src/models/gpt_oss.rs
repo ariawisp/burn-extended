@@ -42,6 +42,8 @@ pub struct GptOssConfig {
     pub rope_initial_context: f32,
     pub rope_ntk_alpha: f32,
     pub rope_ntk_beta: f32,
+    // Verbose logging for debugging
+    pub verbose: bool,
 }
 
 impl Default for GptOssConfig {
@@ -56,14 +58,14 @@ impl Default for GptOssConfig {
             ffn_hidden: 4096,
             num_experts: 64,
             experts_per_token: 4,
-            disable_moe: false,
-            dropout: 0.0,
-            swiglu_alpha: 1.0,
-            swiglu_limit: 7.0,
-            initializer: Initializer::KaimingUniform {
-                gain: 1.0 / num_traits::Float::sqrt(3.0),
-                fan_out_only: false,
-            },
+        disable_moe: false,
+        dropout: 0.0,
+        swiglu_alpha: 1.702,
+        swiglu_limit: 7.0,
+        initializer: Initializer::KaimingUniform {
+            gain: 1.0 / num_traits::Float::sqrt(3.0),
+            fan_out_only: false,
+        },
             cache_len: 8192,
             sink_tokens: 0,
             window_policy: WindowPolicy::EveryOther {
@@ -77,6 +79,7 @@ impl Default for GptOssConfig {
             rope_initial_context: 4096.0,
             rope_ntk_alpha: 1.0,
             rope_ntk_beta: 32.0,
+            verbose: false,
         }
     }
 }
@@ -201,15 +204,19 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
         start_pos: usize,
         window: AttnWindow,
     ) -> Tensor<B, 2> {
+        use std::time::Instant;
         let [b, t] = tokens.dims();
-        let tile_q = 16usize;
+        // Process full prefill in one tile to reduce kernel launch/setup overhead.
+        let tile_q = t;
         let decode_only_last = cache.caches.first().map(|c| c.len() > 0).unwrap_or(false);
 
         if decode_only_last {
+            if self.cfg.0.verbose { eprintln!("forward_logits: decode path b={} t={} start_pos={}", b, t, start_pos); }
             // Decode step: process only the last token through all layers
             let toks_last = tokens.clone().slice([0..b, t - 1..t]); // [B,1]
             let mut hidden = self.tok_emb.forward(toks_last); // [B,1,d]
             for (l, layer) in self.layers.iter().enumerate() {
+                let layer_t0 = Instant::now();
                 let policy_win = self.cfg.0.window_policy.window_for(l);
                 let layer_window = crate::cache::combine_windows(window, policy_win);
                 let cache_l = cache.cache_mut(l);
@@ -220,22 +227,28 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
                     sinks: None,
                     attn_bias: None,
                 };
+                if self.cfg.0.verbose { eprintln!("layer {}: attn start (decode)", l); }
                 hidden = layer.forward(hidden, cache_l, params); // [B,1,d]
+                if self.cfg.0.verbose { eprintln!("layer {}: attn+moe done in {:.2?}", l, layer_t0.elapsed()); }
             }
             let hidden = self.norm_final.forward(hidden); // [B,1,d]
             let logits = self.lm_head.forward(hidden); // [B,1,V]
             logits.squeeze::<2>(1)
         } else {
+            if self.cfg.0.verbose { eprintln!("forward_logits: prefill path b={} t={} layers={}", b, t, self.cfg.0.n_layers); }
             // Prefill: process the full sequence in small tiles per layer
             let mut hidden_full = self.tok_emb.forward(tokens); // [B, T, d]
             for (l, layer) in self.layers.iter().enumerate() {
+                let layer_t0 = Instant::now();
                 let policy_win = self.cfg.0.window_policy.window_for(l);
                 let layer_window = crate::cache::combine_windows(window, policy_win);
                 let mut out_layer = burn::tensor::Tensor::<B, 3>::zeros([b, t, self.cfg.0.d_model], &hidden_full.device());
                 let cache_l = cache.cache_mut(l);
                 let mut s = 0usize;
+                if self.cfg.0.verbose { eprintln!("layer {}: start", l); }
                 while s < t {
                     let e = core::cmp::min(s + tile_q, t);
+                    if self.cfg.0.verbose { eprintln!("layer {}: tile {}..{}", l, s, e); }
                     let chunk = hidden_full.clone().slice([0..b, s..e, 0..self.cfg.0.d_model]);
                     let params = StreamingMqaParams {
                         rope: Some(&self.rope),
@@ -248,6 +261,7 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
                     out_layer.inplace(|tens| tens.slice_assign([0..b, s..e, 0..self.cfg.0.d_model], out_chunk.clone()));
                     s = e;
                 }
+                if self.cfg.0.verbose { eprintln!("layer {}: done in {:.2?}", l, layer_t0.elapsed()); }
                 hidden_full = out_layer;
             }
             let hidden = self.norm_final.forward(hidden_full);
@@ -275,6 +289,8 @@ impl<B: Backend> GptOssModel<B> {
             layer.attn.pre_scaled_qk = flag;
         }
     }
+
+    // No device-quant residency stored in the module; we decode tiles on device from bytes.
 
     pub fn debug_layer_attn_qk(
         &self,

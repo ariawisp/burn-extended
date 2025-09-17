@@ -22,7 +22,9 @@ struct Args {
 
 #[derive(Debug, Deserialize)]
 struct GptOssJsonConfig {
+    #[allow(dead_code)]
     context_length: Option<usize>,
+    #[allow(dead_code)]
     vocab_size: usize,
     hidden_size: usize,
     num_hidden_layers: usize,
@@ -52,6 +54,7 @@ fn write_padding<W: Write + Seek>(w: &mut W, align: usize) -> Result<()> {
 
 #[derive(Clone, Debug)]
 struct StView<'a> {
+    #[allow(dead_code)]
     name: String,
     shape: Vec<usize>,
     bytes: &'a [u8],
@@ -346,7 +349,7 @@ fn main() -> Result<()> {
     // Open output
     let f = File::create(&dst).context("create dst file")?;
     let mut w = BufWriter::new(f);
-    let mut pos = |w: &mut BufWriter<File>| -> Result<u64> {
+    let pos = |w: &mut BufWriter<File>| -> Result<u64> {
         Ok(w.seek(SeekFrom::Current(0))?)
     };
 
