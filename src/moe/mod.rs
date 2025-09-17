@@ -500,10 +500,12 @@ impl<B: Backend> MoeGatedSwiGLU<B> {
             }
             // Touch counters to avoid unused warnings when debug is off
             let _ = (experts_used, tokens_used_total);
-            moe_dbg!(
-                "moe tile: experts_used={} tokens_used_total={} take_n={}",
-                experts_used, tokens_used_total, take_n
-            );
+            if tokens_used_total > 0 {
+                moe_dbg!(
+                    "moe tile: experts_used={} tokens_used_total={} take_n={}",
+                    experts_used, tokens_used_total, take_n
+                );
+            }
 
             // Write accumulated tile into output accumulator
             acc.inplace(|t| t.slice_assign([start_n..start_n + take_n, 0..d], acc_tile));

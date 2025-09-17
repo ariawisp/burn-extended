@@ -36,3 +36,5 @@ libc = "0.2"
 default = ["std"]
 std = ["burn-core/std"]
 moe_debug = []
+attn_debug = []
+infer_debug = []
