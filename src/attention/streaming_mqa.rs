@@ -242,11 +242,9 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         cache: &mut StreamingMqaCache<B>,
         params: StreamingMqaParams<B>,
     ) -> Tensor<B, 3> {
-        #[cfg(feature = "attn_debug")]
-        {
-            let [b, t, _] = x.dims();
-            eprintln!("attn: b={} t={} start_pos={} pre_scaled_qk={} heads={} kv={} d_k={}", b, t, params.start_pos, self.pre_scaled_qk, self.n_heads, self.kv_heads, self.d_k);
-        }
+        // debug: uncomment for verbose tracing
+        // let [b, t, _] = x.dims();
+        // eprintln!("attn: b={} t={} start_pos={} pre_scaled_qk={} heads={} kv={} d_k={}", b, t, params.start_pos, self.pre_scaled_qk, self.n_heads, self.kv_heads, self.d_k);
         debug_assert!(
             cache.sink_tokens <= cache.cache_len,
             "sink tokens exceed cache capacity"
@@ -326,28 +324,8 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         let local_start = local_end - num_new;
         let k_rs = k.swap_dims(1, 2); // [B, T, kvH, d_k]
         let v_rs = v.swap_dims(1, 2);
-        cache.k.inplace(|t| {
-            t.slice_assign(
-                [
-                    0..batch_size,
-                    local_start..local_end,
-                    0..self.kv_heads,
-                    0..self.d_k,
-                ],
-                k_rs,
-            )
-        });
-        cache.v.inplace(|t| {
-            t.slice_assign(
-                [
-                    0..batch_size,
-                    local_start..local_end,
-                    0..self.kv_heads,
-                    0..self.d_k,
-                ],
-                v_rs,
-            )
-        });
+        cache.k.inplace(|t| t.slice_assign([0..batch_size, local_start..local_end, 0..self.kv_heads, 0..self.d_k], k_rs));
+        cache.v.inplace(|t| t.slice_assign([0..batch_size, local_start..local_end, 0..self.kv_heads, 0..self.d_k], v_rs));
         cache.global_end_index = current_end;
 
         // Determine the active window
@@ -411,8 +389,7 @@ impl<B: Backend> StreamingMultiQueryAttention<B> {
         let mut start_q = 0usize;
         while start_q < seq_len {
             let take_q = core::cmp::min(tile_q, seq_len - start_q);
-            #[cfg(feature = "attn_debug")]
-            eprintln!("attn tile: start_q={} take_q={} active_len={}", start_q, take_q, active_len);
+            // eprintln!("attn tile: start_q={} take_q={} active_len={}", start_q, take_q, active_len);
             let q_tile = q.clone().slice([0..batch_size, 0..self.n_heads, start_q..start_q + take_q, 0..self.d_k]);
             let mut scores = crate::attention::compute_scores(q_tile, k_exp.clone(), scale_dk, &self.dropout);
             if let Some(bias_ref) = params.attn_bias.as_ref() {

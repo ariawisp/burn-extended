@@ -1,4 +1,4 @@
-use burn_core as burn;
+use burn as burn;
 
 use burn::module::{Ignored, Module};
 use burn::nn::{
@@ -91,7 +91,13 @@ pub struct GptOssLayer<B: Backend> {
     mlp: MoeGatedSwiGLU<B>,
 }
 
-impl<B: Backend> GptOssLayer<B> {
+impl<B> GptOssLayer<B>
+where
+    B: Backend<
+        FloatTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+        IntTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+    >,
+{
     fn forward(
         &self,
         hidden: Tensor<B, 3>,
@@ -116,6 +122,7 @@ pub struct GptOssModel<B: Backend> {
     #[allow(dead_code)]
     rope: burn::nn::RotaryEncoding<B>,
     cfg: Ignored<GptOssConfig>,
+    moe_quant_resident: Ignored<Option<alloc::vec::Vec<crate::quant::MoeQuantLayerResident>>>,
 }
 
 impl GptOssConfig {
@@ -143,6 +150,7 @@ impl GptOssConfig {
                 swiglu_limit: self.swiglu_limit,
                 initializer: self.initializer.clone(),
                 disabled: self.disable_moe,
+                verbose: self.verbose,
             }
             .init::<B>(device);
             layers.push(GptOssLayer {
@@ -178,11 +186,19 @@ impl GptOssConfig {
             lm_head,
             rope,
             cfg: Ignored(self.clone()),
+            #[cfg(feature = "wgpu")]
+            moe_quant_resident: Ignored(None),
         }
     }
 }
 
-impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
+impl<B> AutoregressiveModel<B> for GptOssModel<B>
+where
+    B: Backend<
+        FloatTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+        IntTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+    >,
+{
     type Cache = MqaCacheManager<B>;
 
     fn init_cache(&self, batch: usize, device: &B::Device) -> Self::Cache {
@@ -274,14 +290,13 @@ impl<B: Backend> AutoregressiveModel<B> for GptOssModel<B> {
     }
 }
 
-impl<B: Backend> GptOssModel<B> {
-    /// Attach per-layer MoE streaming contexts built from a model.bin mmap index.
-    pub fn set_moe_streaming_contexts(&mut self, contexts: Vec<Arc<crate::moe::MoeStreamingContext>>) {
-        assert_eq!(self.layers.len(), contexts.len(), "contexts length must match layers");
-        for (l, ctx) in contexts.into_iter().enumerate() {
-            self.layers[l].mlp.set_streaming(ctx);
-        }
-    }
+impl<B> GptOssModel<B>
+where
+    B: Backend<
+        FloatTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+        IntTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+    >,
+{
 
     /// Set whether attention expects pre-scaled Q/K (skip 1/sqrt(d_k)).
     pub fn set_pre_scaled_qk(&mut self, flag: bool) {
@@ -436,5 +451,39 @@ impl<B: Backend> GptOssModel<B> {
             hidden = layer.forward(hidden, cache_l, params);
         }
         self.norm_final.forward(hidden)
+    }
+
+    // Placeholder hook for device-resident MoE quant weights (CubeCL path).
+    // Integrated fused kernels will use this storage; until then this is a no-op.
+    pub fn set_moe_quant_resident(&mut self, layers: Vec<crate::quant::MoeQuantLayerResident>) {
+        assert_eq!(layers.len(), self.layers.len(), "resident layers len mismatch");
+        // Attach to each MoE block
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            layer.mlp.set_resident(Arc::new(layers[i].clone()));
+        }
+        self.moe_quant_resident = Ignored(Some(layers));
+    }
+
+    pub fn set_moe_quant_from_host(&mut self, layers: Vec<crate::quant::MoeQuantLayerHost>) {
+        use burn::backend::wgpu::WgpuDevice;
+        // Use model device from an existing tensor (e.g., tok_emb). Since this crate is WGPU-only,
+        // transmute to the concrete device type safely in this context.
+        let device = self.tok_emb.weight.device();
+        let device: &WgpuDevice = unsafe { &*(&device as *const _ as *const WgpuDevice) };
+
+        let mut residents: alloc::vec::Vec<crate::quant::MoeQuantLayerResident> = alloc::vec::Vec::with_capacity(layers.len());
+        for host in layers.into_iter() {
+            let res = crate::quant::MoeQuantLayerResident::new(
+                device,
+                host.w1_desc,
+                host.w1_blocks,
+                host.w1_scales,
+                host.w2_desc,
+                host.w2_blocks,
+                host.w2_scales,
+            );
+            residents.push(res);
+        }
+        self.set_moe_quant_resident(residents);
     }
 }

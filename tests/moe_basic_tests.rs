@@ -19,6 +19,8 @@ fn moe_forward_shapes_and_residual() {
         swiglu_alpha: 1.0,
         swiglu_limit: 7.0,
         initializer: burn::nn::Initializer::Zeros,
+        disabled: false,
+        verbose: false,
     };
     let moe = cfg.init::<TB>(&device);
 
@@ -30,4 +32,3 @@ fn moe_forward_shapes_and_residual() {
     let diff = (y - x).abs().sum().into_scalar();
     assert!(diff < 1e-5, "MoE residual expected with zero-initialized params");
 }
-

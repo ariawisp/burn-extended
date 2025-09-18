@@ -19,18 +19,18 @@ struct Args {
     /// Prompt text to complete (Harmony format will be applied)
     #[arg(short = 'p', long = "prompt", value_name = "TEXT")]
     prompt: Option<String>,
-    /// Max new tokens to generate (default: 16)
-    #[arg(long = "max_new_tokens")]
-    max_new_tokens: Option<usize>,
     /// Sampling temperature (default: 0.0 = greedy)
     #[arg(long = "temperature", default_value_t = 0.0)]
     temperature: f32,
     /// top-k sampling (optional)
     #[arg(long = "top_k")]
     top_k: Option<usize>,
-    /// Verbose debug logging
+    /// Compact debug logging (prints every ~10 steps)
     #[arg(long = "debug", default_value_t = false)]
     debug: bool,
+    /// Trace per-layer timings (very verbose)
+    #[arg(long = "trace", default_value_t = false)]
+    trace: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         ffn_hidden: parsed.header.mlp_dim as usize,
         num_experts: parsed.header.num_experts as usize,
         experts_per_token: parsed.header.num_active_experts as usize,
-        verbose: args.debug,
+        verbose: args.trace,
         ..Default::default()
     };
     let mut cfg = cfg;
@@ -94,12 +94,12 @@ fn main() -> anyhow::Result<()> {
     if args.debug {
         eprintln!("prefill_len={}", prefill_ids.len());
     }
-    let stop_set: std::collections::HashSet<usize> = match encoding.stop_tokens_for_assistant_actions() {
+    // Full stop set: includes normal end-of-message tokens like <|end|>.
+    let stop_set: std::collections::HashSet<usize> = match encoding.stop_tokens() {
         Ok(v) => v.into_iter().map(|u| u as usize).collect(),
         Err(_) => std::collections::HashSet::new(),
     };
-    // Mirror python gpt_oss.generate semantics: default unlimited tokens (limit=0)
-    let max_new = args.max_new_tokens.unwrap_or(0);
+    // Unlimited decode: rely on Harmony stop tokens only.
     let sampler = burn_extended::sampling::SamplerConfig {
         temperature: args.temperature,
         top_k: args.top_k,
@@ -112,6 +112,8 @@ fn main() -> anyhow::Result<()> {
     let mut completion: Vec<usize> = Vec::new();
     let mut start_pos = prefill_ids.len();
     let mut last_token: usize;
+    // Initialize Harmony streaming parser: next role is Assistant. It will detect message boundaries.
+    let mut parser = openai_harmony::StreamableParser::new(encoding.clone(), Some(Role::Assistant))?;
     {
         let input = burn::tensor::Tensor::<B, 2, burn::tensor::Int>::from_ints(
             burn_tensor::TensorData::new(
@@ -122,15 +124,7 @@ fn main() -> anyhow::Result<()> {
         );
         let t0 = std::time::Instant::now();
         let logits_prefill = model.forward_logits(input, &mut cache, 0, burn_extended::attention::AttnWindow::Full);
-        if args.debug {
-            eprintln!("prefill forward done in {:.2?}", t0.elapsed());
-            // print top-5 logits indices
-            let vec = logits_prefill.clone().into_data().convert::<f32>().into_vec::<f32>().expect("logits vec");
-            let mut idx: Vec<usize> = (0..vec.len()).collect();
-            idx.sort_unstable_by(|&a,&b| vec[b].partial_cmp(&vec[a]).unwrap_or(core::cmp::Ordering::Equal));
-            let topn = idx.iter().take(5).map(|&i| (i, vec[i])).collect::<Vec<_>>();
-            eprintln!("prefill top5: {:?}", topn);
-        }
+        if args.debug { eprintln!("prefill forward done in {:.2?}", t0.elapsed()); }
         // Sample first token from prefill logits (next position)
         let next_id = if args.temperature <= 0.0 && args.top_k.is_none() {
             // Greedy on CPU
@@ -179,9 +173,8 @@ fn main() -> anyhow::Result<()> {
         }
         best
     };
-    // Step-wise decode for remaining tokens (if any)
-    // Unlimited when max_new == 0; rely on stop tokens with a very large ceiling
-    let safety_cap = if max_new == 0 { 1_000_000 } else { max_new };
+    // Step-wise decode for remaining tokens. Unlimited; rely on Harmony stop tokens.
+    let safety_cap = 1_000_000usize;
     let mut produced = 0usize;
     while produced < safety_cap {
         // Provide the last token as a 1-length input; forward_logits uses the cache and processes only this position.
@@ -191,7 +184,9 @@ fn main() -> anyhow::Result<()> {
             &device,
         );
         let logits = model.forward_logits(input, &mut cache, start_pos, burn_extended::attention::AttnWindow::Full);
-        if args.debug { eprintln!("decode step {}: forward {:.2?} start_pos={} last_token={}", produced, t1.elapsed(), start_pos, last_token); }
+        if args.debug && produced % 10 == 0 {
+            eprintln!("decode step {}: forward {:.2?} start_pos={} last_token={}", produced, t1.elapsed(), start_pos, last_token);
+        }
         // Sample next token
         let next_id = if args.temperature <= 0.0 && args.top_k.is_none() {
             greedy_cpu(logits)
@@ -212,10 +207,16 @@ fn main() -> anyhow::Result<()> {
             eprintln!("[warn] sampled invalid token id {} (vocab={}), stopping.", next_id, vocab_size);
             break;
         }
-        if args.debug { eprintln!("sampled next_id={}", next_id); }
-        // Stop on Harmony stop tokens
+        if args.debug && produced % 10 == 0 { eprintln!("sampled next_id={}", next_id); }
+        // Feed token to Harmony streaming parser and break when a full message is parsed
+        parser.process(next_id as u32)?;
+        if !parser.messages().is_empty() {
+            if args.debug { eprintln!("hit end-of-message (Harmony parser)"); }
+            break;
+        }
+        // Optional: short-circuit if token is a known stop token (defensive)
         if stop_set.contains(&next_id) {
-            if args.debug { eprintln!("hit stop token"); }
+            if args.debug { eprintln!("hit stop token (short-circuit)"); }
             break;
         }
         completion.push(next_id);
@@ -226,25 +227,42 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Decode completion back into Harmony messages and print assistant text.
-    let tokens_u32: Vec<u32> = completion.iter().map(|&u| u as u32).collect();
-    match encoding.parse_messages_from_completion_tokens(tokens_u32, Some(Role::Assistant)) {
-        Ok(messages) => {
-            let mut text = String::new();
-            for msg in messages {
-                if let Role::Assistant = msg.author.role {
-                    for c in msg.content {
-                        if let openai_harmony::chat::Content::Text(t) = c {
-                            if !text.is_empty() { text.push('\n'); }
-                            text.push_str(&t.text);
-                        }
+    if !parser.messages().is_empty() {
+        let messages = parser.into_messages();
+        let mut text = String::new();
+        for msg in messages {
+            if let Role::Assistant = msg.author.role {
+                for c in msg.content {
+                    if let openai_harmony::chat::Content::Text(t) = c {
+                        if !text.is_empty() { text.push('\n'); }
+                        text.push_str(&t.text);
                     }
                 }
             }
-            println!("{}", text);
         }
-        Err(e) => {
-            eprintln!("[warn] Failed to parse completion tokens: {}", e);
-            println!("modelbin infer output lens: {}", completion.len());
+        println!("{}", text);
+    } else {
+        // Fallback: single-shot parse if parser didn’t finalize for some reason
+        let tokens_u32: Vec<u32> = completion.iter().map(|&u| u as u32).collect();
+        match encoding.parse_messages_from_completion_tokens(tokens_u32, Some(Role::Assistant)) {
+            Ok(messages) => {
+                let mut text = String::new();
+                for msg in messages {
+                    if let Role::Assistant = msg.author.role {
+                        for c in msg.content {
+                            if let openai_harmony::chat::Content::Text(t) = c {
+                                if !text.is_empty() { text.push('\n'); }
+                                text.push_str(&t.text);
+                            }
+                        }
+                    }
+                }
+                println!("{}", text);
+            }
+            Err(e) => {
+                eprintln!("[warn] Failed to parse completion tokens: {}", e);
+                println!("modelbin infer output lens: {}", completion.len());
+            }
         }
     }
     Ok(())

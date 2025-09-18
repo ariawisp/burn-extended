@@ -9,12 +9,16 @@ documentation = "https://docs.rs/burn-extended"
 publish = false
 
 [dependencies]
-burn        = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn",        default-features = false, features = ["wgpu"] }
-burn-core   = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-core",   default-features = false }
-burn-ndarray = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-ndarray", default-features = false, features = ["std"] }
-burn-store  = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-store",  default-features = false }
-burn-tensor = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-tensor", default-features = false }
-burn-wgpu   = { git = "https://github.com/tracel-ai/burn", rev = "24a516878f15615cf5d6c34894a6459e186cf4e4", package = "burn-wgpu",   default-features = false }
+burn        = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn",        default-features = false, features = ["wgpu"] }
+burn-core   = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-core",   default-features = false }
+burn-ndarray = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-ndarray", default-features = false, features = ["std"] }
+burn-store  = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-store",  default-features = false }
+burn-tensor = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-tensor", default-features = false }
+burn-wgpu   = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-wgpu",   default-features = false, features = ["template"] }
+burn-cubecl = { git = "https://github.com/tracel-ai/burn", rev = "0c13f844dc530e36dddff4626f9644746dbe53c6", package = "burn-cubecl", default-features = false }
+cubecl = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "018341e10e98dd6e93ac28592adc56f5710c1453" }
+cubecl-common = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "018341e10e98dd6e93ac28592adc56f5710c1453" }
+cubecl-quant = { git = "https://github.com/tracel-ai/cubecl", default-features = false, rev = "018341e10e98dd6e93ac28592adc56f5710c1453" }
 clap = { version = "4.5.47", features = ["derive"], default-features = true }
 hashbrown = "0.15.0"
 num-traits = "0.2.19"
@@ -31,10 +35,9 @@ uuid = { version = "1", features = ["std", "fast-rng"] }
 half = { version = "2", features = ["std"] }
 memmap2 = "0.9"
 libc = "0.2"
+bytemuck = { version = "1", default-features = true }
 
 [features]
-default = ["std"]
+default = ["std", "wgpu"]
 std = ["burn-core/std"]
-moe_debug = []
-attn_debug = []
-infer_debug = []
+wgpu = []

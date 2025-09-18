@@ -155,12 +155,19 @@ pub fn parse_modelbin(path: &Path) -> Result<ParsedModelBin> {
     parse_headers(&mut f)
 }
 
-pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clone + 'static>(
+pub fn load_modelbin_into<B, M>(
     model: &mut M,
     path: &Path,
     validate: bool,
     skip_moe: bool,
-) -> Result<ApplyResult> {
+) -> Result<ApplyResult>
+where
+    B: burn::tensor::backend::Backend<
+        FloatTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+        IntTensorPrimitive = burn_cubecl::tensor::CubeTensor<cubecl::wgpu::WgpuRuntime>,
+    >,
+    M: Module<B> + Clone + 'static,
+{
     use anyhow::Context;
     let mut f = File::open(path).with_context(|| format!("open {:?}", path))?;
     let parsed = parse_headers(&mut f)?;
@@ -325,7 +332,7 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     let bytes_mlp2_scales = rows_mlp2 * gpr_mlp2;
     let bytes_mlp2_bias = rows_mlp2 * 2;
 
-    // Build per-layer streaming indices for MoE quantized weights (mmap-friendly offsets).
+    // Build per-layer expert offsets to efficiently copy bytes into resident host buffers.
     let mut per_layer_expert_offsets: Vec<Vec<crate::moe::MoeExpertOffsets>> = Vec::with_capacity(n_layers);
 
     for l in 0..n_layers {
@@ -406,9 +413,8 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     if validate && !result.errors.is_empty() {
         anyhow::bail!("Import errors: {:?}", result.errors);
     }
-    // Create mmap for the file and attach streaming contexts per layer if the model type supports it.
+    // Create mmap for the file to copy raw u8 sections directly.
     let mmap = unsafe { memmap2::MmapOptions::new().map(&f)? };
-    // Advise random access to reduce readahead thrash on Apple/Linux
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     unsafe {
         let ptr = mmap.as_ptr() as *mut core::ffi::c_void;
@@ -417,41 +423,42 @@ pub fn load_modelbin_into<B: burn::tensor::backend::Backend, M: Module<B> + Clon
     }
     let mmap_arc = Arc::new(mmap);
 
-    // Build contexts per layer
-    let mut contexts: Vec<Arc<crate::moe::MoeStreamingContext>> = Vec::with_capacity(n_layers);
+    // Build host-resident quant payloads per layer from mmap offsets (single canonical path)
+    let mut host_layers: Vec<crate::quant::MoeQuantLayerHost> = Vec::with_capacity(n_layers);
     for l in 0..n_layers {
-        let ctx = crate::moe::MoeStreamingContext {
-            mmap: mmap_arc.clone(),
-            experts: per_layer_expert_offsets[l].clone(),
-            rows_mlp1,
-            cols_mlp1,
-            rows_mlp2,
-            cols_mlp2,
-            ue8_offset: 14,
-        };
-        contexts.push(Arc::new(ctx));
+            let mut w1_blocks = vec![0u8; e * bytes_mlp1_blocks];
+            let mut w1_scales = vec![0u8; e * bytes_mlp1_scales];
+            let mut w2_blocks = vec![0u8; e * bytes_mlp2_blocks];
+            let mut w2_scales = vec![0u8; e * bytes_mlp2_scales];
+            for ex in 0..e {
+                let off = &per_layer_expert_offsets[l][ex];
+                // W1 blocks
+                let src = &mmap_arc[off.mlp1_blocks_off as usize..(off.mlp1_blocks_off as usize + bytes_mlp1_blocks)];
+                let dst_off = ex * bytes_mlp1_blocks;
+                w1_blocks[dst_off..dst_off + bytes_mlp1_blocks].copy_from_slice(src);
+                // W1 scales
+                let src = &mmap_arc[off.mlp1_scales_off as usize..(off.mlp1_scales_off as usize + bytes_mlp1_scales)];
+                let dst_off = ex * bytes_mlp1_scales;
+                w1_scales[dst_off..dst_off + bytes_mlp1_scales].copy_from_slice(src);
+                // W2 blocks
+                let src = &mmap_arc[off.mlp2_blocks_off as usize..(off.mlp2_blocks_off as usize + bytes_mlp2_blocks)];
+                let dst_off = ex * bytes_mlp2_blocks;
+                w2_blocks[dst_off..dst_off + bytes_mlp2_blocks].copy_from_slice(src);
+                // W2 scales
+                let src = &mmap_arc[off.mlp2_scales_off as usize..(off.mlp2_scales_off as usize + bytes_mlp2_scales)];
+                let dst_off = ex * bytes_mlp2_scales;
+                w2_scales[dst_off..dst_off + bytes_mlp2_scales].copy_from_slice(src);
+            }
+            let w1_desc = crate::quant::QuantLinearMxFp4Desc { experts: e, rows: rows_mlp1, cols: cols_mlp1, bpr: bpr_mlp1, gpr: gpr_mlp1, ue8_offset: 14 };
+            let w2_desc = crate::quant::QuantLinearMxFp4Desc { experts: e, rows: rows_mlp2, cols: cols_mlp2, bpr: bpr_mlp2, gpr: gpr_mlp2, ue8_offset: 14 };
+            host_layers.push(crate::quant::MoeQuantLayerHost { w1_desc, w2_desc, w1_blocks, w1_scales, w2_blocks, w2_scales });
     }
 
-    // If M is our GPT-OSS model, attach contexts; otherwise ignore.
-    // We detect by downcasting via Any (Module doesn't expose RTTI), so expose a helper on the model instead.
-    // Use trait bounds: try to call a known method via specialization is not possible; fall back to a runtime trick using cfg(feature) is overkill.
-    // Instead, attempt to use public method via any: we define a trait locally and implement for model type.
-    attach_moe_streaming_contexts_if_supported(model, contexts);
+    // Attach device-resident quant buffers to model (canonical path, no fallbacks).
+    crate::quant::attach_quant_from_host_to_model::<B>(model as &mut dyn core::any::Any, host_layers);
 
     Ok(result)
 }
 
 // Helper: attach contexts to GPT-OSS model if the concrete type exposes the method.
-fn attach_moe_streaming_contexts_if_supported<B: burn::tensor::backend::Backend, M: Module<B> + Clone + 'static>(
-    model: &mut M,
-    contexts: Vec<Arc<crate::moe::MoeStreamingContext>>,
-) {
-    // Use Any downcast to GptOssModel if available without creating a direct dependency cycle.
-    use core::any::Any;
-    // Safety: Module<B> types are 'static here.
-    if let Some(m_any) = (model as &mut dyn Any).downcast_mut::<crate::models::gpt_oss::GptOssModel<B>>() {
-        m_any.set_moe_streaming_contexts(contexts);
-    }
-}
-
-// Upload device-resident quantized MoE tensors per layer for faster runtime decoding.
+// No streaming fallback: single canonical resident path.

@@ -17,6 +17,9 @@ pub mod image;
 pub mod loader;
 pub mod models;
 pub mod moe;
+pub mod quant;
 pub mod rope;
 pub mod sampling;
 pub mod video;
+
+// No additional re-exports; we depend on `cubecl` directly for kernels.
